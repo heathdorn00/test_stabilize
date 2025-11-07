@@ -1,0 +1,86 @@
+# ServiceMonitor for Widget Core
+# Task: bd88ec - Deploy observability stack
+#
+# Deploy:
+#   kubectl apply -f widget-core-servicemonitor.yaml -n microservices
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: widget-core
+  namespace: microservices
+  labels:
+    prometheus: monitoring
+    app: widget-core
+    app.kubernetes.io/name: widget-core
+    app.kubernetes.io/part-of: microservices
+    app_type: wxwidgets
+spec:
+  selector:
+    matchLabels:
+      app: widget-core
+      app_type: wxwidgets
+
+  namespaceSelector:
+    matchNames:
+      - microservices
+
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /metrics
+      scheme: http
+
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_service_label_app]
+          targetLabel: service
+          action: replace
+
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+          action: replace
+
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+          action: replace
+
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace
+
+        - sourceLabels: [__meta_kubernetes_pod_annotation_version]
+          targetLabel: version
+          action: replace
+
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: 'go_.*'
+          action: drop
+
+        - targetLabel: app_type
+          replacement: 'wxwidgets'
+          action: replace
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: widget-core
+  namespace: microservices
+  labels:
+    app: widget-core
+    app_type: wxwidgets
+spec:
+  selector:
+    app: widget-core
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  type: ClusterIP

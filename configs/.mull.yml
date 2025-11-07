@@ -1,0 +1,99 @@
+# Mull Mutation Testing Configuration for C++
+#
+# RDB-002 Testing Infrastructure Modernization
+# Week 1: Incremental mutation testing (changed files only)
+#
+# Usage:
+#   - PR Pipeline: mull-cxx -mutators=all -compdb-path=build/compile_commands.json \
+#                    -include-path=$(git diff --name-only main...HEAD | grep -E '\.(cpp|cc|cxx)$' | tr '\n' ',')
+#   - Nightly Full Scan: mull-cxx -mutators=all -compdb-path=build/compile_commands.json
+#
+# Target: ≥80% mutation score for new code, ≥75% for legacy
+
+# Mutators configuration (LLVM-based)
+mutators:
+  - cxx_assignment_operator      # a = b → a += b, a -= b
+  - cxx_increment                # i++ → i--
+  - cxx_decrement                # i-- → i++
+  - cxx_arithmetic               # a + b → a - b, a * b, a / b
+  - cxx_relational               # a < b → a <= b, a > b
+  - cxx_logical                  # a && b → a || b
+  - cxx_bitwise                  # a & b → a | b, a ^ b
+  - cxx_negate_condition         # if (x) → if (!x)
+  - cxx_remove_void_call         # Remove void function calls (e.g., logging)
+  - cxx_replace_call             # Replace function calls with different return values
+
+# Exclude patterns - avoid false positives
+exclude_paths:
+  - "*/test/*"
+  - "*/tests/*"
+  - "*_test.cpp"
+  - "*_test.cc"
+  - "*/mock/*"
+  - "*/mocks/*"
+  - "*/generated/*"
+  - "*/third_party/*"
+  - "*/vendor/*"
+
+# Include paths - focus on business logic
+include_paths:
+  - "src/widget_core/**/*.cpp"
+  - "src/rendering/**/*.cpp"
+  - "src/event_processing/**/*.cpp"
+  - "src/layout_engine/**/*.cpp"
+  - "src/msw_adapter/**/*.cpp"
+  - "src/gtk_adapter/**/*.cpp"
+  - "src/cocoa_adapter/**/*.cpp"
+
+# Performance configuration
+parallel_execution: true
+workers: 4                       # Parallel workers (adjust based on CI runner cores)
+timeout_per_test: 60000          # 60s timeout per mutant
+
+# Thresholds - CI gates
+thresholds:
+  high: 90                       # Aspirational for critical paths
+  low: 80                        # Standard for new code
+  break: 75                      # Fail PR if below 75% (legacy minimum)
+
+# Reporting
+reporters:
+  - ide                          # IDE-friendly format
+  - json                         # JSON for CI/CD parsing
+  - sqlite                       # SQLite database for trend analysis
+
+# IDE integration (VSCode, CLion)
+ide_reporter:
+  output_file: "mull-results.json"
+
+# JSON reporter for CI/CD
+json_reporter:
+  output_file: "mull-report.json"
+
+# SQLite reporter for Grafana
+sqlite_reporter:
+  output_file: ".mull-tmp/mull-results.db"
+
+# Incremental mode (Week 1 requirement)
+cache_directory: ".mull-tmp/cache"
+use_cache: true
+cache_ttl: 86400                 # 24 hours
+
+# GoogleTest integration
+test_framework: googletest
+test_binary: "build/tests/test_runner"
+test_arguments: "--gtest_filter=*"
+
+# Ignore specific functions (no business logic)
+ignore_functions:
+  - ".*::log.*"                  # Logging functions
+  - ".*::debug.*"                # Debug functions
+  - ".*::trace.*"                # Trace functions
+  - ".*::toString.*"             # String conversion (often trivial)
+  - ".*::operator<<.*"           # Stream operators (logging)
+
+# Compilation database (CMake-generated)
+compilation_database: "build/compile_commands.json"
+
+# Week 3 validation: Ensure <2min for typical PR (10-20 files)
+# Monitor: Grafana dashboard tracks mutation testing duration

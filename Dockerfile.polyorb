@@ -1,0 +1,83 @@
+# PolyORB Testing Environment
+# Task: 81500c - Set Up Docker/Linux Test Environment
+# Owner: @test_stabilize
+# Purpose: Enable full PolyORB build and test suite execution on any platform
+
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Set GNAT version
+ARG GNAT_VERSION=13
+
+# Install build dependencies and testing tools
+RUN apt-get update && apt-get install -y \
+    # Ada/GNAT toolchain
+    gnat-${GNAT_VERSION} \
+    gprbuild \
+    libgnatvsn${GNAT_VERSION}-dev \
+    # Build tools
+    make \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    # Version control
+    git \
+    # Testing and coverage tools
+    gcov \
+    lcov \
+    valgrind \
+    # Network tools for integration tests
+    netcat-openbsd \
+    curl \
+    wget \
+    # Python for test automation
+    python3 \
+    python3-pip \
+    python3-venv \
+    # Utilities
+    vim \
+    less \
+    tree \
+    procps \
+    # Clean up to reduce image size
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python testing tools
+RUN pip3 install --no-cache-dir \
+    pytest==7.4.3 \
+    pytest-cov==4.1.0 \
+    pytest-xdist==3.5.0
+
+# Create workspace directory
+WORKDIR /workspace
+
+# Set up environment variables
+ENV PATH="/usr/lib/gcc/x86_64-linux-gnu/${GNAT_VERSION}/rts-native/adalib:${PATH}"
+ENV GPR_PROJECT_PATH="/workspace"
+ENV BUILD_MODE="release"
+
+# Create directories for build artifacts
+RUN mkdir -p /workspace/obj /workspace/lib /workspace/bin
+
+# Labels
+LABEL maintainer="test_stabilize"
+LABEL description="PolyORB Ada testing environment with GNAT ${GNAT_VERSION}"
+LABEL task="81500c"
+LABEL version="1.0"
+
+# Default command - bash shell for interactive use
+CMD ["/bin/bash"]
+
+# Build instructions:
+# docker build -f Dockerfile.polyorb -t polyorb-test:latest .
+#
+# Run instructions:
+# docker run -it --rm -v $(pwd):/workspace polyorb-test:latest
+#
+# Run with test execution:
+# docker run --rm -v $(pwd):/workspace polyorb-test:latest make test

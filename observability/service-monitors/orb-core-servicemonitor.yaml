@@ -1,0 +1,103 @@
+# ServiceMonitor for ORB Core
+# Task: bd88ec - Deploy observability stack
+#
+# Deploy:
+#   kubectl apply -f orb-core-servicemonitor.yaml -n microservices
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: orb-core
+  namespace: microservices
+  labels:
+    prometheus: monitoring
+    app: orb-core
+    app.kubernetes.io/name: orb-core
+    app.kubernetes.io/part-of: microservices
+    app_type: polyorb
+spec:
+  selector:
+    matchLabels:
+      app: orb-core
+      app_type: polyorb
+
+  namespaceSelector:
+    matchNames:
+      - microservices
+
+  endpoints:
+    # PolyORB services use port 9091 for metrics
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /metrics
+      scheme: http
+
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_service_label_app]
+          targetLabel: service
+          action: replace
+
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+          action: replace
+
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+          action: replace
+
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace
+
+        - sourceLabels: [__meta_kubernetes_pod_annotation_version]
+          targetLabel: version
+          action: replace
+
+        # Add phase_1_refactor label for tracking Phase 1 metrics
+        - sourceLabels: [__meta_kubernetes_pod_label_refactor_phase]
+          targetLabel: refactor_phase
+          action: replace
+
+      metricRelabelings:
+        # Drop unnecessary Ada runtime metrics
+        - sourceLabels: [__name__]
+          regex: 'ada_runtime_.*'
+          action: drop
+
+        # Add app_type label
+        - targetLabel: app_type
+          replacement: 'polyorb'
+          action: replace
+
+        # Keep Phase 1 deallocation metrics
+        - sourceLabels: [__name__]
+          regex: 'polyorb_memory_deallocations_.*'
+          action: keep
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orb-core
+  namespace: microservices
+  labels:
+    app: orb-core
+    app_type: polyorb
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9091"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: orb-core
+  ports:
+    - name: orb
+      port: 12000
+      targetPort: 12000
+      protocol: TCP
+    - name: metrics
+      port: 9091
+      targetPort: 9091
+      protocol: TCP
+  type: ClusterIP

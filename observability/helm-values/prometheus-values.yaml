@@ -1,0 +1,578 @@
+# Prometheus Stack Helm Values (kube-prometheus-stack)
+# Task: bd88ec - Deploy observability stack (Prometheus, Grafana, Loki, Jaeger)
+# Chart: prometheus-community/kube-prometheus-stack
+# Version: 55.x+
+#
+# Deploy:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install prometheus prometheus-community/kube-prometheus-stack \
+#     -f prometheus-values.yaml \
+#     -n observability --create-namespace
+
+# ==============================================================================
+# Global Settings
+# ==============================================================================
+
+fullnameOverride: "prometheus"
+
+# ==============================================================================
+# Prometheus Server
+# ==============================================================================
+
+prometheus:
+  enabled: true
+
+  prometheusSpec:
+    # High availability with 2 replicas
+    replicas: 2
+
+    # Retention and storage
+    retention: 15d
+    retentionSize: "45GB"
+
+    # Storage configuration
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard  # Adjust for your cluster
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+
+    # Resource limits
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 4Gi
+      limits:
+        cpu: 2000m
+        memory: 8Gi
+
+    # Scrape interval and timeout
+    scrapeInterval: "30s"
+    scrapeTimeout: "10s"
+    evaluationInterval: "30s"
+
+    # External labels (for federation/alerting)
+    externalLabels:
+      cluster: "refactor-microservices"
+      environment: "production"
+      project: "wxwidgets-polyorb-refactor"
+
+    # Enable features
+    enableFeatures:
+      - exemplar-storage  # For tracing integration
+
+    # ServiceMonitor selector - match all ServiceMonitors
+    serviceMonitorSelector:
+      matchLabels:
+        prometheus: monitoring
+
+    # PodMonitor selector
+    podMonitorSelector:
+      matchLabels:
+        prometheus: monitoring
+
+    # Rule selector for alerting rules
+    ruleSelector:
+      matchLabels:
+        prometheus: monitoring
+        role: alert-rules
+
+    # Additional scrape configs for custom targets
+    additionalScrapeConfigs:
+      # wxWidgets services (C++ with Prometheus client library)
+      - job_name: 'wxwidgets-services'
+        scrape_interval: 15s
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - default
+                - microservices
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_type]
+            regex: wxwidgets
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            regex: true
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+            regex: ([0-9]+)
+            target_label: __address__
+            replacement: ${1}:$1
+
+      # PolyORB services (Ada with custom metrics endpoint)
+      - job_name: 'polyorb-services'
+        scrape_interval: 15s
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - default
+                - microservices
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_type]
+            regex: polyorb
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            regex: true
+            action: keep
+
+      # PostgreSQL exporter
+      - job_name: 'postgresql'
+        static_configs:
+          - targets: ['postgres-exporter:9187']
+
+      # Redis exporter
+      - job_name: 'redis'
+        static_configs:
+          - targets: ['redis-exporter:9121']
+
+# ==============================================================================
+# AlertManager
+# ==============================================================================
+
+alertmanager:
+  enabled: true
+
+  alertmanagerSpec:
+    replicas: 2
+
+    # Storage
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+    # Resource limits
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 200m
+        memory: 512Mi
+
+    # Retention
+    retention: 120h  # 5 days
+
+  # AlertManager configuration
+  config:
+    global:
+      resolve_timeout: 5m
+
+      # Slack integration (configure webhook URL in secret)
+      slack_api_url_file: /etc/alertmanager/secrets/slack-webhook-url/url
+
+    # Routing tree
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'default'
+
+      # Child routes based on severity
+      routes:
+        # CRITICAL - immediate notification
+        - match:
+            severity: critical
+          receiver: 'critical-alerts'
+          continue: true
+          group_wait: 0s
+          repeat_interval: 5m
+
+        # HIGH - urgent notification
+        - match:
+            severity: high
+          receiver: 'high-alerts'
+          repeat_interval: 15m
+
+        # MEDIUM - standard notification
+        - match:
+            severity: medium
+          receiver: 'medium-alerts'
+          repeat_interval: 1h
+
+        # LOW - daily digest
+        - match:
+            severity: low
+          receiver: 'low-alerts'
+          repeat_interval: 24h
+
+    # Receivers (notification channels)
+    receivers:
+      - name: 'default'
+        slack_configs:
+          - channel: '#observability-alerts'
+            title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+      - name: 'critical-alerts'
+        slack_configs:
+          - channel: '#incidents-critical'
+            send_resolved: true
+            title: ':rotating_light: CRITICAL: {{ .GroupLabels.alertname }}'
+            text: |
+              {{ range .Alerts }}
+              *Alert:* {{ .Labels.alertname }}
+              *Severity:* {{ .Labels.severity }}
+              *Service:* {{ .Labels.service }}
+              *Description:* {{ .Annotations.description }}
+              *Runbook:* {{ .Annotations.runbook_url }}
+              {{ end }}
+        # PagerDuty integration
+        pagerduty_configs:
+          - service_key_file: /etc/alertmanager/secrets/pagerduty/key
+            description: '{{ .GroupLabels.alertname }}: {{ .GroupLabels.service }}'
+
+      - name: 'high-alerts'
+        slack_configs:
+          - channel: '#alerts-high'
+            send_resolved: true
+            title: ':warning: HIGH: {{ .GroupLabels.alertname }}'
+
+      - name: 'medium-alerts'
+        slack_configs:
+          - channel: '#alerts-medium'
+            send_resolved: false
+
+      - name: 'low-alerts'
+        slack_configs:
+          - channel: '#alerts-low'
+            send_resolved: false
+
+    # Inhibition rules (suppress dependent alerts)
+    inhibit_rules:
+      # If service is down, don't alert on high latency
+      - source_match:
+          alertname: 'ServiceDown'
+        target_match_re:
+          alertname: '(HighLatency|HighErrorRate)'
+        equal: ['service']
+
+      # If cluster is down, don't alert on individual pods
+      - source_match:
+          alertname: 'ClusterDown'
+        target_match_re:
+          alertname: '(PodDown|ServiceDown)'
+        equal: ['cluster']
+
+# ==============================================================================
+# Grafana
+# ==============================================================================
+
+grafana:
+  enabled: true
+
+  # Admin credentials (override with secrets in production)
+  adminPassword: "changeme"
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  # Persistence for dashboards
+  persistence:
+    enabled: true
+    storageClassName: standard
+    size: 10Gi
+
+  # Grafana configuration
+  grafana.ini:
+    server:
+      root_url: "https://grafana.example.com"  # Update with your domain
+      serve_from_sub_path: false
+
+    auth:
+      disable_login_form: false
+      oauth_auto_login: false
+
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+
+    analytics:
+      check_for_updates: true
+      reporting_enabled: false
+
+    log:
+      mode: console
+      level: info
+
+    # Unified alerting
+    unified_alerting:
+      enabled: true
+
+    # Tracing integration (Jaeger)
+    tracing.jaeger:
+      enabled: true
+      address: "jaeger-collector:14268"
+      sampler_type: const
+      sampler_param: 1
+
+  # Data sources
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        # Prometheus
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus-prometheus:9090
+          isDefault: true
+          jsonData:
+            timeInterval: 30s
+            queryTimeout: 60s
+            httpMethod: POST
+            exemplarTraceIdDestinations:
+              - name: trace_id
+                datasourceUid: jaeger
+
+        # Loki (logs)
+        - name: Loki
+          type: loki
+          access: proxy
+          url: http://loki:3100
+          jsonData:
+            maxLines: 1000
+            derivedFields:
+              - datasourceUid: jaeger
+                matcherRegex: "trace_id=(\\w+)"
+                name: TraceID
+                url: "$${__value.raw}"
+
+        # Jaeger (traces)
+        - name: Jaeger
+          type: jaeger
+          access: proxy
+          url: http://jaeger-query:16686
+          uid: jaeger
+
+  # Dashboard providers
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: 'Microservices'
+          type: file
+          disableDeletion: false
+          updateIntervalSeconds: 10
+          allowUiUpdates: true
+          options:
+            path: /var/lib/grafana/dashboards/default
+
+  # Import dashboards (will be created separately)
+  dashboardsConfigMaps:
+    default: "grafana-dashboards"
+
+  # Ingress configuration
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - grafana.example.com  # Update with your domain
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.example.com
+
+  # SMTP configuration for alerting
+  smtp:
+    enabled: false
+    host: smtp.gmail.com:587
+    user: alerts@example.com
+    password: ""
+    from_address: grafana@example.com
+    from_name: Grafana
+
+# ==============================================================================
+# Kube-State-Metrics
+# ==============================================================================
+
+kube-state-metrics:
+  enabled: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ==============================================================================
+# Prometheus Node Exporter
+# ==============================================================================
+
+prometheus-node-exporter:
+  enabled: true
+
+  # Deploy as DaemonSet on all nodes
+  hostRootFsMount:
+    enabled: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ==============================================================================
+# Default Service Monitors
+# ==============================================================================
+
+defaultRules:
+  create: true
+  rules:
+    # Enable all default alerting rules
+    alertmanager: true
+    etcd: true
+    general: true
+    k8s: true
+    kubeApiserver: true
+    kubeApiserverAvailability: true
+    kubeApiserverSlos: true
+    kubelet: true
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeScheduler: true
+    kubeStateMetrics: true
+    network: true
+    node: true
+    prometheus: true
+    prometheusOperator: true
+
+# ==============================================================================
+# Component-Specific ServiceMonitors
+# ==============================================================================
+
+kubeApiServer:
+  enabled: true
+
+kubelet:
+  enabled: true
+
+kubeControllerManager:
+  enabled: true
+
+coreDns:
+  enabled: true
+
+kubeEtcd:
+  enabled: true
+
+kubeScheduler:
+  enabled: true
+
+kubeProxy:
+  enabled: true
+
+# ==============================================================================
+# Prometheus Operator
+# ==============================================================================
+
+prometheusOperator:
+  enabled: true
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Prometheus Operator manages CRDs
+  manageCrds: true
+
+  # Create default network policies
+  createCustomResource: true
+
+  # Admission webhooks
+  admissionWebhooks:
+    enabled: true
+    patch:
+      enabled: true
+
+# ==============================================================================
+# Additional Configuration
+# ==============================================================================
+
+# Global labels applied to all resources
+commonLabels:
+  app.kubernetes.io/part-of: observability
+  prometheus: monitoring
+  project: wxwidgets-polyorb-refactor
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+# Network policies
+networkPolicy:
+  enabled: false  # Enable if needed
+
+# ==============================================================================
+# Notes
+# ==============================================================================
+#
+# Post-installation:
+#
+# 1. Access Grafana:
+#    kubectl port-forward -n observability svc/prometheus-grafana 3000:80
+#    Open: http://localhost:3000
+#    Login: admin / changeme
+#
+# 2. Access Prometheus:
+#    kubectl port-forward -n observability svc/prometheus-prometheus 9090:9090
+#    Open: http://localhost:9090
+#
+# 3. Access AlertManager:
+#    kubectl port-forward -n observability svc/prometheus-alertmanager 9093:9093
+#    Open: http://localhost:9093
+#
+# 4. Configure secrets:
+#    kubectl create secret generic slack-webhook-url \
+#      --from-literal=url=https://hooks.slack.com/services/YOUR/WEBHOOK/URL \
+#      -n observability
+#
+#    kubectl create secret generic pagerduty-key \
+#      --from-literal=key=YOUR_PAGERDUTY_INTEGRATION_KEY \
+#      -n observability
+#
+# 5. Apply ServiceMonitors for your microservices:
+#    kubectl apply -f ../service-monitors/
+#
+# 6. Apply alerting rules:
+#    kubectl apply -f ../alerting-rules/
+#
+# 7. Import Grafana dashboards:
+#    kubectl create configmap grafana-dashboards \
+#      --from-file=../dashboards/ \
+#      -n observability
+#
+# ==============================================================================

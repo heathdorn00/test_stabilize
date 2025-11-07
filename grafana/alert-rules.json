@@ -1,0 +1,345 @@
+{
+  "groups": [
+    {
+      "name": "testing-infrastructure-alerts",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "coverage-regression",
+          "title": "Test Coverage Regression",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 86400, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "avg(test_coverage_percent{type=\"line\"})",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "math",
+              "expression": "delta($A, '1d')",
+              "datasourceUid": "-100"
+            },
+            {
+              "refId": "C",
+              "queryType": "math",
+              "expression": "$A < 80 && $B < -2",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "1h",
+          "annotations": {
+            "summary": "Test coverage dropped below 80% and decreased >2% in 24h",
+            "description": "Current coverage: {{ $values.A.Value }}%, Target: 80%\nChange in 24h: {{ $values.B.Value }}%",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/coverage-regression"
+          },
+          "labels": {
+            "severity": "warning",
+            "team": "test_stabilize"
+          }
+        },
+        {
+          "uid": "mutation-score-low",
+          "title": "Mutation Score Below Threshold",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 1800, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "avg(test_mutation_score)",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "math",
+              "expression": "$A < 75",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "30m",
+          "annotations": {
+            "summary": "Mutation score below 75% (CI gate threshold)",
+            "description": "Current mutation score: {{ $values.A.Value }}%\nTarget: 80%, Minimum: 75%\n\nAction: Review surviving mutants and strengthen test assertions.",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/mutation-score-low"
+          },
+          "labels": {
+            "severity": "critical",
+            "team": "test_stabilize"
+          }
+        },
+        {
+          "uid": "flaky-test-rate-high",
+          "title": "Flaky Test Rate Exceeded 3%",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 21600, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "avg(test_flaky_rate)",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "math",
+              "expression": "$A > 0.03",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "6h",
+          "annotations": {
+            "summary": "Flaky test rate exceeded 3%",
+            "description": "Current flaky rate: {{ printf \"%.2f\" (mul $values.A.Value 100) }}%\nTarget: <1%\n\nAction: Quarantine flaky tests and stabilize determinism.",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/flaky-tests"
+          },
+          "labels": {
+            "severity": "warning",
+            "team": "test_stabilize"
+          }
+        },
+        {
+          "uid": "test-suite-timeout",
+          "title": "Test Suite Duration Exceeded 10 Minutes",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 3600, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "sum(rate(test_suite_duration_seconds_sum[5m])) / sum(rate(test_suite_duration_seconds_count[5m]))",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "math",
+              "expression": "$A > 600",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "1h",
+          "annotations": {
+            "summary": "Test suite duration exceeded 10 minutes",
+            "description": "Current duration: {{ humanizeDuration $values.A.Value }}\nTarget: <5min (300s)\n\nAction: Profile slow tests, parallelize execution, or reduce E2E tests.",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/slow-test-suite"
+          },
+          "labels": {
+            "severity": "warning",
+            "team": "test_stabilize"
+          }
+        },
+        {
+          "uid": "fast-fail-gate-slow",
+          "title": "Fast-Fail Gate Exceeded 2 Minutes",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 1800, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "avg(ci_pipeline_duration_seconds{stage=\"fast-fail\"})",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "math",
+              "expression": "$A > 120",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "30m",
+          "annotations": {
+            "summary": "Fast-fail gate exceeded 2-minute target",
+            "description": "Current duration: {{ $values.A.Value }}s\nTarget: <2min (120s)\n\nAction: Profile Stage 1 steps (lint, type-check, secret scan, critical tests) and optimize.",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/slow-fast-fail"
+          },
+          "labels": {
+            "severity": "warning",
+            "team": "test_stabilize"
+          }
+        },
+        {
+          "uid": "secret-scan-violation",
+          "title": "🚨 SECRET DETECTED - BLOCKING DEPLOYMENT",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 60, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "sum(secret_scan_violations{severity=\"high\"})",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "math",
+              "expression": "$A > 0",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "Alerting",
+          "execErrState": "Alerting",
+          "for": "0s",
+          "annotations": {
+            "summary": "🚨 SECRET DETECTED IN CODE - DEPLOYMENT BLOCKED",
+            "description": "{{ $values.A.Value }} secret(s) detected by TruffleHog/GitLeaks.\n\n⚠️ IMMEDIATE ACTION REQUIRED:\n1. Revoke/rotate exposed credentials\n2. Remove secrets from code\n3. Use environment variables or secret management\n4. Re-run secret scan to verify\n\nDeployment is BLOCKED until all secrets are removed.",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/secret-leak-response",
+            "pagerduty_severity": "critical"
+          },
+          "labels": {
+            "severity": "critical",
+            "team": "test_stabilize,security_verification",
+            "pagerduty": "true"
+          }
+        },
+        {
+          "uid": "cve-threshold-exceeded",
+          "title": "CVE Threshold Exceeded",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 3600, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "sum(cve_count{severity=\"critical\"})",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 3600, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "sum(cve_count{severity=\"high\"})",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "math",
+              "expression": "$A > 0 || $B > 3",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "Alerting",
+          "for": "1h",
+          "annotations": {
+            "summary": "CVE threshold exceeded (0 CRITICAL, ≤3 HIGH)",
+            "description": "CRITICAL CVEs: {{ $values.A.Value }}\nHIGH CVEs: {{ $values.B.Value }}\n\nThreshold: 0 CRITICAL, ≤3 HIGH per service\n\nAction: Patch container images or upgrade vulnerable packages.",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/cve-remediation"
+          },
+          "labels": {
+            "severity": "high",
+            "team": "test_stabilize,security_verification"
+          }
+        },
+        {
+          "uid": "production-data-in-tests",
+          "title": "🚨 PRODUCTION DATA DETECTED IN TESTS - COMPLIANCE VIOLATION",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 3600, "to": 0},
+              "datasourceUid": "postgres-testing",
+              "model": {
+                "rawSql": "SELECT COUNT(*) FROM test_data_sources WHERE data_source != 'synthetic' AND timestamp >= NOW() - INTERVAL '1 hour'",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "math",
+              "expression": "$A > 0",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "Alerting",
+          "execErrState": "Alerting",
+          "for": "0s",
+          "annotations": {
+            "summary": "🚨 PRODUCTION DATA DETECTED IN TESTS - COMPLIANCE VIOLATION",
+            "description": "{{ $values.A.Value }} test(s) detected using production data.\n\n⚠️ CRITICAL: GDPR/HIPAA violation risk\n\nIMMEDIATE ACTION REQUIRED:\n1. Quarantine affected tests\n2. Purge production data from test environments\n3. Notify compliance team\n4. Use synthetic data (faker.js) for all tests\n5. File incident report if PII confirmed",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/production-data-leak",
+            "pagerduty_severity": "critical"
+          },
+          "labels": {
+            "severity": "critical",
+            "team": "test_stabilize,security_verification,compliance",
+            "pagerduty": "true"
+          }
+        },
+        {
+          "uid": "contract-coverage-low",
+          "title": "Contract Coverage Below Target",
+          "condition": "B",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": {"from": 3600, "to": 0},
+              "datasourceUid": "prometheus-testing",
+              "model": {
+                "expr": "contract_coverage_percent",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "math",
+              "expression": "$A < 50",
+              "datasourceUid": "-100"
+            }
+          ],
+          "noDataState": "NoData",
+          "execErrState": "OK",
+          "for": "24h",
+          "annotations": {
+            "summary": "Contract coverage below 50% (Target: 100% by Week 12)",
+            "description": "Current contract coverage: {{ $values.A.Value }}%\nTarget: 100% of 256 service connections\n\nAction: Prioritize Pact contract creation for high-risk service pairs.",
+            "runbook_url": "https://wiki.refactorteam.local/runbooks/low-contract-coverage"
+          },
+          "labels": {
+            "severity": "info",
+            "team": "test_stabilize"
+          }
+        }
+      ]
+    }
+  ]
+}

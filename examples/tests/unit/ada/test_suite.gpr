@@ -1,0 +1,33 @@
+-- GPR Project File for AUnit Test Suite
+-- Task: 57fbde - Set up comprehensive test framework
+-- Layer 1: Unit Tests (50% coverage target)
+
+with "aunit";
+
+project Test_Suite is
+
+   for Source_Dirs use (".");
+   for Object_Dir use "obj";
+   for Exec_Dir use ".";
+   for Main use ("test_runner.adb");
+
+   package Compiler is
+      for Switches ("ada") use ("-gnatwa", "-gnatyg", "-g", "-O0");
+      -- For coverage: add "-fprofile-arcs", "-ftest-coverage"
+   end Compiler;
+
+   package Builder is
+      for Executable ("test_runner.adb") use "test_runner";
+      for Switches ("ada") use ("-g");
+   end Builder;
+
+   package Binder is
+      for Switches ("ada") use ("-Es");
+   end Binder;
+
+   package Linker is
+      for Switches ("ada") use ("-g");
+      -- For coverage: add "-fprofile-arcs"
+   end Linker;
+
+end Test_Suite;

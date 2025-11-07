@@ -1,0 +1,352 @@
+name: Performance Baseline
+
+# Task: 57fbde - Comprehensive Test Framework / RDB-002
+# Purpose: Capture and compare performance baselines
+# Detects performance regressions before production deployment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - 'tests/performance/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/**'
+      - 'tests/performance/**'
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday midnight UTC
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Baseline capture duration (seconds)'
+        required: false
+        default: '300'
+      rps:
+        description: 'Target requests per second'
+        required: false
+        default: '10'
+      services:
+        description: 'Services to test (comma-separated or "all")'
+        required: false
+        default: 'all'
+
+env:
+  BASELINE_DURATION: ${{ github.event.inputs.duration || '300' }}
+  TARGET_RPS: ${{ github.event.inputs.rps || '10' }}
+  TEST_SERVICES: ${{ github.event.inputs.services || 'all' }}
+  REGRESSION_THRESHOLD: 10  # 10% regression threshold
+
+jobs:
+  # ===========================================================================
+  # Capture Current Performance Baseline
+  # ===========================================================================
+  capture-baseline:
+    name: Capture Performance Baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: microservices_test
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          cd tests/performance
+          pip install -r requirements.txt
+
+      - name: Start all services
+        run: |
+          docker-compose -f docker-compose.production.yml up -d
+          sleep 60  # Wait for services to fully initialize
+
+      - name: Verify services are healthy
+        run: |
+          curl -f http://localhost:8080/health || exit 1  # API Gateway
+          curl -f http://localhost:8081/health || exit 1  # Widget Core
+          curl -f http://localhost:12000/api/v1/health || exit 1  # ORB Core
+          curl -f http://localhost:8082/health || exit 1  # Security Service
+
+      - name: Capture baseline snapshot
+        run: |
+          cd tests/performance
+          python baseline_capture.py \
+            --services ${TEST_SERVICES} \
+            --duration ${BASELINE_DURATION} \
+            --rps ${TARGET_RPS} \
+            --output baselines/current-${{ github.sha }}.json
+
+      - name: Upload current baseline
+        uses: actions/upload-artifact@v3
+        with:
+          name: current-baseline
+          path: tests/performance/baselines/current-${{ github.sha }}.json
+
+      - name: Print baseline summary
+        run: |
+          cd tests/performance
+          cat baselines/current-${{ github.sha }}.json | jq '.latency[] | {endpoint, p95, p99}'
+          cat baselines/current-${{ github.sha }}.json | jq '.throughput[] | {service, requests_per_second}'
+
+      - name: Stop services
+        if: always()
+        run: docker-compose -f docker-compose.production.yml down
+
+  # ===========================================================================
+  # Compare Against Previous Baseline
+  # ===========================================================================
+  compare-baseline:
+    name: Compare Against Previous Baseline
+    runs-on: ubuntu-latest
+    needs: [capture-baseline]
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          cd tests/performance
+          pip install -r requirements.txt
+
+      - name: Download current baseline
+        uses: actions/download-artifact@v3
+        with:
+          name: current-baseline
+          path: tests/performance/baselines/
+
+      - name: Fetch official baseline from main branch
+        run: |
+          # Download official baseline from main branch
+          git fetch origin main:main
+          git show main:tests/performance/baselines/official.json > tests/performance/baselines/official.json || \
+            echo "No official baseline found, skipping comparison"
+
+      - name: Compare baselines
+        if: hashFiles('tests/performance/baselines/official.json') != ''
+        id: comparison
+        run: |
+          cd tests/performance
+          python baseline_compare.py \
+            --baseline baselines/official.json \
+            --current baselines/current-${{ github.sha }}.json \
+            --threshold ${REGRESSION_THRESHOLD} \
+            --output reports/comparison-${{ github.sha }}.json || echo "REGRESSIONS_FOUND=true" >> $GITHUB_ENV
+
+      - name: Upload comparison report
+        if: always() && hashFiles('tests/performance/baselines/official.json') != ''
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-comparison
+          path: tests/performance/reports/comparison-${{ github.sha }}.json
+
+      - name: Comment PR with performance results
+        if: github.event_name == 'pull_request' && hashFiles('tests/performance/baselines/official.json') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('tests/performance/reports/comparison-${{ github.sha }}.json', 'utf8'));
+
+            let body = `## Performance Baseline Comparison\n\n`;
+            body += `**Regressions**: ${report.regressions_count}\n`;
+            body += `**Improvements**: ${report.improvements_count}\n\n`;
+
+            if (report.critical_issues.length > 0) {
+              body += `### ⚠️ Critical Issues\n\n`;
+              report.critical_issues.forEach(issue => {
+                body += `- ${issue}\n`;
+              });
+              body += `\n`;
+            }
+
+            body += `### Latency (P95/P99)\n\n`;
+            body += `| Endpoint | Baseline P95 | Current P95 | Change | Status |\n`;
+            body += `|----------|--------------|-------------|--------|--------|\n`;
+            report.latency_comparisons.slice(0, 10).forEach(comp => {
+              const icon = comp.change_type === 'regression' ? '⚠️' : comp.change_type === 'improvement' ? '✅' : '→';
+              body += `| ${comp.endpoint} | ${comp.baseline_p95.toFixed(1)}ms | ${comp.current_p95.toFixed(1)}ms | ${comp.p95_change_pct > 0 ? '+' : ''}${comp.p95_change_pct.toFixed(1)}% | ${icon} |\n`;
+            });
+            body += `\n`;
+
+            body += `### Throughput\n\n`;
+            body += `| Service | Baseline RPS | Current RPS | Change | Status |\n`;
+            body += `|---------|--------------|-------------|--------|--------|\n`;
+            report.throughput_comparisons.forEach(comp => {
+              const icon = comp.change_type === 'regression' ? '⚠️' : comp.change_type === 'improvement' ? '✅' : '→';
+              body += `| ${comp.service} | ${comp.baseline_rps.toFixed(1)} | ${comp.current_rps.toFixed(1)} | ${comp.change_pct > 0 ? '+' : ''}${comp.change_pct.toFixed(1)}% | ${icon} |\n`;
+            });
+
+            if (report.critical_issues.length > 0) {
+              body += `\n---\n\n⚠️ **CRITICAL PERFORMANCE REGRESSIONS DETECTED**\n\nPlease review and optimize before merging.`;
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Fail on critical regressions
+        if: env.REGRESSIONS_FOUND == 'true'
+        run: |
+          echo "::error::Critical performance regressions detected"
+          echo "Review the comparison report and optimize performance before merging"
+          exit 1
+
+  # ===========================================================================
+  # Store Baseline (Main Branch Only)
+  # ===========================================================================
+  store-baseline:
+    name: Store Baseline
+    runs-on: ubuntu-latest
+    needs: [capture-baseline, compare-baseline]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.compare-baseline.result == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download current baseline
+        uses: actions/download-artifact@v3
+        with:
+          name: current-baseline
+          path: tests/performance/baselines/
+
+      - name: Store baseline with version
+        run: |
+          cd tests/performance/baselines
+          # Copy to versioned file
+          cp current-${{ github.sha }}.json v$(date +%Y%m%d-%H%M%S).json
+
+          # Update official baseline
+          cp current-${{ github.sha }}.json official.json
+
+          # Cleanup old baselines (keep last 30)
+          ls -t v*.json | tail -n +31 | xargs -r rm
+
+      - name: Commit baseline to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tests/performance/baselines/
+          git commit -m "Update performance baseline [skip ci]" || echo "No changes to commit"
+          git push
+
+      - name: Upload baseline to S3 (optional)
+        if: env.AWS_S3_BUCKET != ''
+        env:
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+        run: |
+          aws s3 cp \
+            tests/performance/baselines/current-${{ github.sha }}.json \
+            s3://${AWS_S3_BUCKET}/performance-baselines/$(date +%Y/%m)/baseline-${{ github.sha }}.json
+
+  # ===========================================================================
+  # Performance Trend Report (Weekly)
+  # ===========================================================================
+  trend-report:
+    name: Performance Trend Report
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          cd tests/performance
+          pip install -r requirements.txt
+          pip install matplotlib pandas
+
+      - name: Generate trend report
+        run: |
+          cd tests/performance
+          python generate_trend_report.py \
+            --baselines baselines/v*.json \
+            --output reports/trend-$(date +%Y-%m-%d).html
+
+      - name: Upload trend report
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-trend-report
+          path: tests/performance/reports/trend-*.html
+
+      - name: Create GitHub issue with trend report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `📊 Weekly Performance Trend Report - ${new Date().toISOString().split('T')[0]}`,
+              body: `Performance trend report for the week.\n\n` +
+                    `Download the report from the [workflow artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n\n` +
+                    `Review trends and identify any gradual performance degradation.`,
+              labels: ['performance', 'monitoring', 'report']
+            });
+
+  # ===========================================================================
+  # Summary
+  # ===========================================================================
+  performance-summary:
+    name: Performance Testing Summary
+    runs-on: ubuntu-latest
+    needs: [capture-baseline, compare-baseline, store-baseline]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "Capture Baseline: ${{ needs.capture-baseline.result }}"
+          echo "Compare Baseline: ${{ needs.compare-baseline.result }}"
+          echo "Store Baseline: ${{ needs.store-baseline.result }}"
+
+      - name: Success
+        if: needs.compare-baseline.result == 'success'
+        run: echo "✅ No performance regressions detected!"
+
+      - name: Failure
+        if: needs.compare-baseline.result == 'failure'
+        run: |
+          echo "::error::Performance regressions detected"
+          exit 1

@@ -1,0 +1,432 @@
+# PolyORB CI/CD Pipeline - Main Workflow
+# Task: cb9a80 - Set up CI/CD pipelines with security gates
+# Owner: @test_stabilize
+# Target: <10 minute build time, 80% coverage
+
+name: CI/CD - PolyORB
+
+on:
+  push:
+    branches: [master, main, develop, 'feature/**', 'release/**']
+  pull_request:
+    branches: [master, main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+env:
+  # Build configuration
+  BUILD_MODE: release
+  # Coverage targets
+  COVERAGE_TARGET: 80
+  # GNAT version
+  GNAT_VERSION: "13"
+
+jobs:
+  # ====================
+  # STAGE 1: Build & Test
+  # ====================
+
+  build-matrix:
+    name: Build & Test (${{ matrix.os }}, GNAT ${{ matrix.gnat }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        gnat: ["13"]
+        include:
+          - os: ubuntu-latest
+            gnat: "13"
+            container: ghcr.io/alire-project/gnat-x86_64-linux:13
+
+    container:
+      image: ${{ matrix.container }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            gprbuild \
+            gnat-${{ matrix.gnat }} \
+            libgnatvsn${{ matrix.gnat }}-dev \
+            make \
+            autoconf \
+            automake \
+            libtool
+
+      - name: Cache GPR build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gprbuild
+            obj/
+          key: gpr-${{ matrix.os }}-${{ matrix.gnat }}-${{ hashFiles('**/*.gpr') }}-${{ github.sha }}
+          restore-keys: |
+            gpr-${{ matrix.os }}-${{ matrix.gnat }}-${{ hashFiles('**/*.gpr') }}-
+            gpr-${{ matrix.os }}-${{ matrix.gnat }}-
+
+      - name: Configure
+        run: |
+          ./support/reconfig
+          ./configure --prefix=/usr/local \
+            --with-appli-perso="corba dsa moma" \
+            --with-proto-perso="giop soap srp" \
+            --with-corba-services="event ir naming notification time"
+
+      - name: Build PolyORB
+        run: |
+          gprbuild -P polyorb.gpr \
+            -XBUILD_MODE=${{ env.BUILD_MODE }} \
+            -XPROCESSORS=$(nproc) \
+            -j$(nproc)
+
+      - name: Build tools
+        run: |
+          make -C tools
+
+      - name: Run unit tests
+        run: |
+          cd testsuite
+          make test-unit JOBS=$(nproc)
+
+      - name: Run basic tests
+        run: |
+          cd testsuite
+          make test-basic JOBS=$(nproc)
+
+      - name: Check test results
+        if: always()
+        run: |
+          if [ -f testsuite/test-results.xml ]; then
+            cat testsuite/test-results.xml
+          fi
+          if [ -f testsuite/test-summary.log ]; then
+            cat testsuite/test-summary.log
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-gnat${{ matrix.gnat }}
+          path: |
+            testsuite/test-results.xml
+            testsuite/test-summary.log
+            testsuite/*.log
+
+      - name: Upload build artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.os }}-gnat${{ matrix.gnat }}
+          path: |
+            config.log
+            obj/**/*.stderr
+            obj/**/*.stdout
+
+  # Coverage analysis
+  coverage:
+    name: Code Coverage Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: build-matrix
+
+    container:
+      image: ghcr.io/alire-project/gnat-x86_64-linux:13
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            gprbuild \
+            gnat-13 \
+            libgnatvsn13-dev \
+            lcov \
+            gcovr \
+            make \
+            autoconf \
+            automake \
+            libtool
+
+      - name: Configure with coverage
+        run: |
+          ./support/reconfig
+          ./configure --prefix=/usr/local \
+            --with-appli-perso="corba dsa moma" \
+            --with-proto-perso="giop soap srp" \
+            --with-corba-services="event ir naming notification time" \
+            --enable-coverage
+
+      - name: Build with coverage
+        run: |
+          gprbuild -P polyorb.gpr \
+            -XBUILD_MODE=debug \
+            -XPROCESSORS=$(nproc) \
+            -cargs -fprofile-arcs -ftest-coverage \
+            -largs -fprofile-arcs
+
+      - name: Run tests
+        run: |
+          cd testsuite
+          make test-all JOBS=$(nproc)
+
+      - name: Generate coverage report
+        run: |
+          lcov --directory . --capture --output-file coverage.info
+          lcov --remove coverage.info '/usr/*' '*/testsuite/*' '*/examples/*' --output-file coverage.info
+          lcov --list coverage.info
+
+      - name: Generate gcov files for Ada
+        run: |
+          find obj -name "*.gcda" -exec gcov {} \;
+
+      - name: Upload to CodeCov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.info
+          flags: unittests
+          name: polyorb-coverage
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(lcov --summary coverage.info 2>&1 | grep lines | awk '{print $2}' | sed 's/%//')
+          echo "Coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < ${{ env.COVERAGE_TARGET }}" | bc -l) )); then
+            echo "::warning::Coverage ${COVERAGE}% is below target ${{ env.COVERAGE_TARGET }}%"
+          else
+            echo "::notice::Coverage ${COVERAGE}% meets target ${{ env.COVERAGE_TARGET }}%"
+          fi
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.info
+            *.gcov
+
+  # ====================
+  # STAGE 2: CORBA Compliance Tests
+  # ====================
+
+  corba-compliance:
+    name: CORBA Compliance Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build-matrix
+
+    container:
+      image: ghcr.io/alire-project/gnat-x86_64-linux:13
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            gprbuild gnat-13 make autoconf automake
+
+      - name: Configure
+        run: |
+          ./support/reconfig
+          ./configure --with-corba-services="event ir naming notification time"
+
+      - name: Build
+        run: |
+          gprbuild -P polyorb.gpr -XBUILD_MODE=release
+
+      - name: Run CORBA compliance tests
+        run: |
+          cd testsuite
+          make test-corba JOBS=$(nproc)
+
+      - name: Upload CORBA test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corba-compliance-results
+          path: |
+            testsuite/corba-*.log
+            testsuite/corba-results.xml
+
+  # ====================
+  # STAGE 3: Integration Tests
+  # ====================
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build-matrix
+
+    container:
+      image: ghcr.io/alire-project/gnat-x86_64-linux:13
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: polyorb
+          POSTGRES_USER: polyorb
+          POSTGRES_DB: polyorb_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            gprbuild gnat-13 make \
+            postgresql-client
+
+      - name: Configure
+        run: |
+          ./support/reconfig
+          ./configure --with-appli-perso="corba dsa moma"
+
+      - name: Build
+        run: |
+          gprbuild -P polyorb.gpr -XBUILD_MODE=release
+
+      - name: Run integration tests
+        env:
+          POLYORB_TEST_DB_HOST: postgres
+          POLYORB_TEST_DB_PORT: 5432
+          POLYORB_TEST_DB_USER: polyorb
+          POLYORB_TEST_DB_PASSWORD: polyorb
+          POLYORB_TEST_DB_NAME: polyorb_test
+        run: |
+          cd testsuite
+          make test-integration JOBS=$(nproc)
+
+  # ====================
+  # Build Summary
+  # ====================
+
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [build-matrix, coverage, corba-compliance, integration-tests]
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          cat <<EOF > $GITHUB_STEP_SUMMARY
+          # PolyORB CI/CD Pipeline Summary
+
+          ## Build Status
+          - **Build Matrix**: ${{ needs.build-matrix.result }}
+          - **Coverage**: ${{ needs.coverage.result }}
+          - **CORBA Compliance**: ${{ needs.corba-compliance.result }}
+          - **Integration Tests**: ${{ needs.integration-tests.result }}
+
+          ## Metrics
+          - Workflow: ${{ github.workflow }}
+          - Commit: ${{ github.sha }}
+          - Branch: ${{ github.ref_name }}
+          - GNAT Version: ${{ env.GNAT_VERSION }}
+          - Triggered by: ${{ github.event_name }}
+
+          ## Next Steps
+          - Security scanning runs in parallel (see security.yaml workflow)
+          - Deployment triggered on successful merge to master
+
+          ---
+          **Status**: ${{ job.status }} | **Time**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          EOF
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = `## 🏗️ PolyORB Build Summary
+
+            | Job | Status |
+            |-----|--------|
+            | Build Matrix | ${{ needs.build-matrix.result }} |
+            | Coverage | ${{ needs.coverage.result }} |
+            | CORBA Compliance | ${{ needs.corba-compliance.result }} |
+            | Integration Tests | ${{ needs.integration-tests.result }}|
+
+            **Next**: Security scanning and deployment checks running in parallel workflows.
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+  # ====================
+  # Quality Gates
+  # ====================
+
+  quality-gate:
+    name: Quality Gate Check
+    runs-on: ubuntu-latest
+    needs: [build-matrix, coverage, corba-compliance, integration-tests]
+    if: always()
+
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [ "${{ needs.build-matrix.result }}" != "success" ]; then
+            echo "::error::Build matrix failed"
+            exit 1
+          fi
+          if [ "${{ needs.coverage.result }}" != "success" ]; then
+            echo "::error::Coverage analysis failed"
+            exit 1
+          fi
+          if [ "${{ needs.corba-compliance.result }}" != "success" ]; then
+            echo "::error::CORBA compliance tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.integration-tests.result }}" != "success" ]; then
+            echo "::error::Integration tests failed"
+            exit 1
+          fi
+          echo "::notice::All quality gates passed ✅"
+
+# Performance targets:
+# - Build time: <20 minutes per matrix job
+# - Coverage: ≥80% line coverage
+# - CORBA compliance: 100% passing
+# - Integration tests: <15 minutes
+# - Total pipeline: <35 minutes (parallel execution)

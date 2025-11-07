@@ -1,0 +1,164 @@
+# Pact Broker Docker Compose
+# Task: 57fbde - Comprehensive Test Framework / RDB-002
+# Layer 3: Contract Testing (Pact CDC)
+#
+# Deploy:
+#   docker-compose -f docker-compose.pact-broker.yml up -d
+#
+# Access:
+#   http://localhost:9292
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # PostgreSQL Database for Pact Broker
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: pact-broker-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: pact_broker
+      POSTGRES_PASSWORD: pact_broker_password
+      POSTGRES_DB: pact_broker
+
+    volumes:
+      - pact-broker-postgres-data:/var/lib/postgresql/data
+
+    networks:
+      - pact-broker-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pact_broker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # Pact Broker
+  # ===========================================================================
+  pact-broker:
+    image: pactfoundation/pact-broker:2.107.1
+    container_name: pact-broker
+    restart: unless-stopped
+
+    ports:
+      - "9292:9292"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      # Database configuration
+      PACT_BROKER_DATABASE_USERNAME: pact_broker
+      PACT_BROKER_DATABASE_PASSWORD: pact_broker_password
+      PACT_BROKER_DATABASE_HOST: postgres
+      PACT_BROKER_DATABASE_NAME: pact_broker
+      PACT_BROKER_DATABASE_PORT: 5432
+
+      # Pact Broker configuration
+      PACT_BROKER_PORT: 9292
+      PACT_BROKER_BASE_URL: http://localhost:9292
+      PACT_BROKER_LOG_LEVEL: INFO
+
+      # Authentication (basic auth)
+      PACT_BROKER_BASIC_AUTH_USERNAME: pactbroker
+      PACT_BROKER_BASIC_AUTH_PASSWORD: pactbroker
+      PACT_BROKER_BASIC_AUTH_READ_ONLY_USERNAME: readonly
+      PACT_BROKER_BASIC_AUTH_READ_ONLY_PASSWORD: readonly
+
+      # Allow dangerous contract modification (disable in production)
+      PACT_BROKER_ALLOW_DANGEROUS_CONTRACT_MODIFICATION: "true"
+
+      # Webhook configuration
+      PACT_BROKER_WEBHOOK_HOST_WHITELIST: localhost,host.docker.internal
+
+      # Badge configuration
+      PACT_BROKER_BADGES_ENABLED: "true"
+
+      # Check for version compatibility
+      PACT_BROKER_CHECK_FOR_POTENTIAL_DUPLICATE_PACTICIPANT_NAMES: "false"
+
+    networks:
+      - pact-broker-network
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9292/diagnostic/status/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    labels:
+      - "com.example.description=Pact Broker for contract testing"
+      - "com.example.service=pact-broker"
+
+# ===========================================================================
+# Networks
+# ===========================================================================
+networks:
+  pact-broker-network:
+    driver: bridge
+
+# ===========================================================================
+# Volumes
+# ===========================================================================
+volumes:
+  pact-broker-postgres-data:
+    driver: local
+
+# ===========================================================================
+# Usage Instructions
+# ===========================================================================
+#
+# 1. Start Pact Broker:
+#    docker-compose -f docker-compose.pact-broker.yml up -d
+#
+# 2. Verify Pact Broker is running:
+#    docker-compose -f docker-compose.pact-broker.yml ps
+#    curl http://localhost:9292
+#
+# 3. Access Pact Broker UI:
+#    Open: http://localhost:9292
+#    Login: pactbroker / pactbroker
+#
+# 4. Publish a contract:
+#    npm run pact:publish
+#    (see package.json scripts)
+#
+# 5. Verify a contract:
+#    npm run pact:verify
+#    (see provider verification setup)
+#
+# 6. View contracts in UI:
+#    http://localhost:9292/ui/relationships
+#
+# 7. Stop Pact Broker:
+#    docker-compose -f docker-compose.pact-broker.yml down
+#
+# 8. Clean up (including data):
+#    docker-compose -f docker-compose.pact-broker.yml down -v
+#
+# ===========================================================================
+# API Endpoints
+# ===========================================================================
+#
+# Health Check:
+#   GET http://localhost:9292/diagnostic/status/heartbeat
+#
+# List Contracts:
+#   GET http://localhost:9292/pacts
+#
+# Publish Contract:
+#   PUT http://localhost:9292/pacts/provider/{provider}/consumer/{consumer}/version/{version}
+#
+# Verify Contract:
+#   POST http://localhost:9292/pacts/provider/{provider}/verification-results
+#
+# Can I Deploy:
+#   GET http://localhost:9292/matrix?q[][pacticipant]={consumer}&q[][version]={version}
+#
+# ===========================================================================

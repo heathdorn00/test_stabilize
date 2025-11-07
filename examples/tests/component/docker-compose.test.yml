@@ -1,0 +1,96 @@
+# Component Test Infrastructure
+# Task: 57fbde - Set up comprehensive test framework
+# Layer 2: Component Tests (30% coverage target)
+
+version: '3.8'
+
+services:
+  # Widget Core Service with dependencies
+  widget-core-test:
+    build:
+      context: ../../services/widget-core
+      dockerfile: Dockerfile.test
+    environment:
+      TEST_MODE: "true"
+      REDIS_HOST: redis-test
+      REDIS_PORT: 6379
+      POSTGRES_HOST: postgres-test
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: widget_test_db
+      POSTGRES_USER: widget_test
+      POSTGRES_PASSWORD: widget_test_password
+    depends_on:
+      redis-test:
+        condition: service_healthy
+      postgres-test:
+        condition: service_healthy
+    networks:
+      - test-network
+    volumes:
+      - ./test_data:/test_data
+
+  # Redis Cache for testing
+  redis-test:
+    image: redis:7-alpine
+    container_name: widget-redis-test
+    ports:
+      - "6379:6379"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # PostgreSQL Database for testing
+  postgres-test:
+    image: postgres:15-alpine
+    container_name: widget-postgres-test
+    environment:
+      POSTGRES_DB: widget_test_db
+      POSTGRES_USER: widget_test
+      POSTGRES_PASSWORD: widget_test_password
+    ports:
+      - "5432:5432"
+    networks:
+      - test-network
+    volumes:
+      - ./fixtures/db_seed.sql:/docker-entrypoint-initdb.d/01-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U widget_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Test Runner
+  component-test-runner:
+    image: python:3.11-slim
+    container_name: component-test-runner
+    depends_on:
+      - widget-core-test
+    environment:
+      WIDGET_CORE_URL: http://widget-core-test:8080
+      REDIS_HOST: redis-test
+      POSTGRES_HOST: postgres-test
+    networks:
+      - test-network
+    volumes:
+      - .:/tests
+    working_dir: /tests
+    command: |
+      bash -c "
+        pip install pytest pytest-asyncio httpx redis psycopg2-binary &&
+        pytest -v --tb=short
+      "
+
+networks:
+  test-network:
+    name: component-test-network
+
+volumes:
+  test-data:
+
+# Usage:
+# docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit
+# docker-compose -f docker-compose.test.yml down -v

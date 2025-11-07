@@ -1,0 +1,81 @@
+# CodeCov Configuration
+# Task: 57fbde - Set up comprehensive test framework
+# Coverage reporting and enforcement
+
+codecov:
+  require_ci_to_pass: yes
+  notify:
+    wait_for_ci: yes
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+
+  status:
+    # Overall project coverage
+    project:
+      default:
+        target: 85%                # Target coverage percentage
+        threshold: 1%              # Allow 1% drop
+        base: auto
+        flags:
+          - unit
+          - component
+          - integration
+        if_ci_failed: error
+
+    # Coverage on changed code (patches)
+    patch:
+      default:
+        target: 80%                # New code must have 80%+ coverage
+        threshold: 0%              # No tolerance for coverage decrease
+        base: auto
+        if_ci_failed: error
+
+  # Individual flag targets
+  flags:
+    unit:
+      target: 85%
+      paths:
+        - "unit/"
+
+    component:
+      target: 80%
+      paths:
+        - "component/"
+
+    integration:
+      target: 70%
+      paths:
+        - "integration/"
+
+parsers:
+  gcov:
+    branch_detection:
+      conditional: yes
+      loop: yes
+      method: no
+      macro: no
+
+comment:
+  layout: "reach,diff,flags,tree"
+  behavior: default
+  require_changes: no
+  require_base: no
+  require_head: yes
+
+ignore:
+  - "**/*_test.cpp"
+  - "**/*_test.adb"
+  - "**/test_*.py"
+  - "**/*.pact.spec.ts"
+  - "**/*.js"               # k6 test scripts
+  - "**/Makefile"
+  - "**/*.md"
+  - "**/fixtures/**"
+  - "**/mocks/**"
+
+# GitHub integration
+github_checks:
+  annotations: true

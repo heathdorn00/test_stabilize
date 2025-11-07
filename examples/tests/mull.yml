@@ -1,0 +1,198 @@
+# Mull Mutation Testing Configuration - C++ (wxWidgets Services)
+# Task: 57fbde - Comprehensive Test Framework / RDB-002
+# Layer 1: Unit Tests (C++ mutation testing)
+
+# ==============================================================================
+# Mull Configuration for wxWidgets C++ Services
+# ==============================================================================
+
+# Mutation operators to apply
+mutators:
+  # Arithmetic mutations
+  - cxx_add_to_sub               # + to -
+  - cxx_sub_to_add               # - to +
+  - cxx_mul_to_div               # * to /
+  - cxx_div_to_mul               # / to *
+  - cxx_rem_assign_to_div        # %= to /=
+
+  # Relational mutations
+  - cxx_eq_to_ne                 # == to !=
+  - cxx_ne_to_eq                 # != to ==
+  - cxx_lt_to_le                 # < to <=
+  - cxx_le_to_lt                 # <= to <
+  - cxx_gt_to_ge                 # > to >=
+  - cxx_ge_to_gt                 # >= to >
+
+  # Logical mutations
+  - cxx_logical_and_to_or        # && to ||
+  - cxx_logical_or_to_and        # || to &&
+
+  # Assignment mutations
+  - cxx_assign_const             # x = const
+  - cxx_init_const               # int x = const
+
+  # Unary mutations
+  - negate_mutator               # -x to x
+  - remove_void_call             # Remove function calls
+
+  # Conditional mutations
+  - cxx_remove_negation          # !x to x
+  - cxx_replace_call             # Replace function calls
+
+# Directories to mutate
+code_paths:
+  - ../../../services/wxwidgets/widget-core/src
+  - ../../../services/wxwidgets/platform-adapter/src
+  - ../../../services/wxwidgets/ui-renderer/src
+
+# Test binaries
+test_binaries:
+  - ../component/wxwidgets/build/widget_core_tests
+  - ../component/wxwidgets/build/platform_adapter_tests
+  - ../component/wxwidgets/build/ui_renderer_tests
+
+# GoogleTest framework
+test_framework: googletest
+
+# Compilation flags
+compilation_flags:
+  - -std=c++17
+  - -I../../../services/wxwidgets/widget-core/include
+  - -I../../../services/wxwidgets/platform-adapter/include
+  - -I../../../services/wxwidgets/ui-renderer/include
+  - -I/usr/local/include/wx-3.2
+
+# Exclude patterns
+exclude:
+  - "*/test/*"
+  - "*/tests/*"
+  - "*_test.cpp"
+  - "*_test.h"
+  - "*/third_party/*"
+  - "*/vendor/*"
+  - "*/build/*"
+
+# Timeout settings
+timeout:
+  # Test timeout (milliseconds)
+  test_timeout: 5000
+
+  # Mutation timeout factor (multiplier of original test time)
+  mutation_timeout_factor: 3
+
+# Parallel execution
+parallelization:
+  workers: 4
+  max_mutations_per_worker: 100
+
+# Reporting
+reporters:
+  - sqlite
+  - json
+  - html
+
+# Report output paths
+report_dir: reports/mutation/cpp
+report_name: mull-report
+
+# SQLite database for incremental runs
+database: .mull.db
+
+# Coverage threshold
+coverage:
+  threshold: 80
+  break_on_low_coverage: true
+
+# Incremental mode (only mutate changed files)
+incremental: true
+
+# Git integration
+git:
+  diff_ref: origin/main
+  only_changed_files: true
+
+# JIT mode (faster compilation)
+jit: true
+
+# Debug options
+debug:
+  enabled: false
+  log_level: info
+  dump_mutants: false
+
+# Custom mutation filters
+filters:
+  # Only mutate files matching these patterns
+  include:
+    - "*.cpp"
+    - "*.cc"
+    - "*.cxx"
+
+  # Exclude specific functions
+  exclude_functions:
+    - "main"
+    - "operator.*"
+    - ".*destructor.*"
+
+# Mutation limits
+limits:
+  # Maximum mutations per file
+  max_mutations_per_file: 500
+
+  # Maximum total mutations
+  max_total_mutations: 5000
+
+# Cache configuration
+cache:
+  enabled: true
+  directory: .mull-cache
+
+# Integration with CI/CD
+ci:
+  # Exit code on mutation threshold failure
+  exit_on_failure: true
+
+  # Minimum mutation score required (%)
+  min_mutation_score: 60
+
+  # Print mutation survivors (mutations not caught by tests)
+  print_survivors: true
+
+# ==============================================================================
+# Usage Instructions
+# ==============================================================================
+#
+# 1. Build C++ services and tests:
+#    cd ../../services/wxwidgets
+#    make build-tests
+#
+# 2. Run Mull mutation testing:
+#    mull-cxx-17 --config tests/mull.yml
+#
+# 3. View HTML report:
+#    open tests/reports/mutation/cpp/mull-report.html
+#
+# 4. View survivors (mutations not caught):
+#    mull-cxx-17 --config tests/mull.yml --list-survivors
+#
+# 5. Run incremental (only changed files):
+#    mull-cxx-17 --config tests/mull.yml --incremental
+#
+# 6. CI/CD Integration:
+#    mull-cxx-17 --config tests/mull.yml --reporters=json
+#    # Check exit code: 0 = passed, 1 = failed
+#
+# ==============================================================================
+# Mutation Score Interpretation
+# ==============================================================================
+#
+# Mutation Score = (Killed Mutations / Total Mutations) * 100
+#
+# Excellent: 80-100% - Very high test quality
+# Good:      60-80%  - Good test quality, some gaps
+# Fair:      40-60%  - Moderate test quality, needs improvement
+# Poor:      0-40%   - Low test quality, major gaps
+#
+# Target: ≥60% mutation score for RDB-002
+#
+# ==============================================================================

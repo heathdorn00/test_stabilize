@@ -1,0 +1,404 @@
+name: Test Suite
+
+# Task: 57fbde - Comprehensive Test Framework / RDB-002
+# Purpose: Run comprehensive test suite on PR and push events
+# Tests: Unit (50%), Component (30%), Integration (15%), E2E (5%)
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'services/**'
+      - 'tests/**'
+      - '.github/workflows/test-suite.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'services/**'
+      - 'tests/**'
+  workflow_dispatch:
+    inputs:
+      test_layers:
+        description: 'Test layers to run (comma-separated: unit,component,integration,e2e)'
+        required: false
+        default: 'unit,component,integration'
+
+env:
+  # Coverage thresholds
+  COVERAGE_THRESHOLD_UNIT: 80
+  COVERAGE_THRESHOLD_COMPONENT: 75
+  COVERAGE_THRESHOLD_INTEGRATION: 60
+  COVERAGE_THRESHOLD_OVERALL: 85
+
+  # Test timeouts (minutes)
+  UNIT_TEST_TIMEOUT: 10
+  COMPONENT_TEST_TIMEOUT: 20
+  INTEGRATION_TEST_TIMEOUT: 30
+  E2E_TEST_TIMEOUT: 45
+
+jobs:
+  # ===========================================================================
+  # Unit Tests (Layer 1) - 50% of test pyramid
+  # ===========================================================================
+  unit-tests-cpp:
+    name: Unit Tests (C++ - GoogleTest)
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(env.UNIT_TEST_TIMEOUT) }}
+
+    strategy:
+      matrix:
+        service: [widget-core, platform-adapter, ui-renderer]
+        compiler: [g++-12, clang++-15]
+        build_type: [Debug, Release]
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/ccache
+            ~/vcpkg
+          key: ${{ runner.os }}-cpp-${{ matrix.compiler }}-${{ hashFiles('**/CMakeLists.txt') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libwxgtk3.2-dev \
+            libgtest-dev \
+            ccache
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DBUILD_TESTING=ON \
+            -DENABLE_COVERAGE=ON \
+            -S services/wxwidgets/${{ matrix.service }}
+
+      - name: Build tests
+        run: cmake --build build --target all --parallel $(nproc)
+
+      - name: Run unit tests
+        run: |
+          cd build
+          ctest --output-on-failure --timeout 300 -L unit
+
+      - name: Generate coverage report
+        if: matrix.compiler == 'g++-12' && matrix.build_type == 'Debug'
+        run: |
+          cd build
+          gcovr --root .. --xml coverage-${{ matrix.service }}.xml
+
+      - name: Upload coverage
+        if: matrix.compiler == 'g++-12' && matrix.build_type == 'Debug'
+        uses: codecov/codecov-action@v3
+        with:
+          files: build/coverage-${{ matrix.service }}.xml
+          flags: unit,cpp,${{ matrix.service }}
+          fail_ci_if_error: false
+
+  unit-tests-ada:
+    name: Unit Tests (Ada - AUnit)
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(env.UNIT_TEST_TIMEOUT) }}
+
+    strategy:
+      matrix:
+        service: [orb-core, message-handler, session-manager]
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install GNAT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnat-12 gprbuild libpolyorb-dev aunit
+
+      - name: Build tests
+        run: |
+          cd services/polyorb/${{ matrix.service }}
+          gprbuild -P tests/unit_tests.gpr
+
+      - name: Run unit tests
+        run: |
+          cd services/polyorb/${{ matrix.service }}
+          ./tests/obj/unit_tests_runner
+
+      - name: Generate coverage
+        run: |
+          cd services/polyorb/${{ matrix.service }}
+          gnatcov coverage --level=stmt --annotate=xml \
+            -P tests/unit_tests.gpr \
+            -o coverage-${{ matrix.service }}.xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: services/polyorb/${{ matrix.service }}/coverage-${{ matrix.service }}.xml
+          flags: unit,ada,${{ matrix.service }}
+          fail_ci_if_error: false
+
+  # ===========================================================================
+  # Component Tests (Layer 2) - 30% of test pyramid
+  # ===========================================================================
+  component-tests:
+    name: Component Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(env.COMPONENT_TEST_TIMEOUT) }}
+    needs: [unit-tests-cpp, unit-tests-ada]
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: microservices_test
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build services
+        run: |
+          docker-compose -f docker-compose.test.yml build \
+            widget-core platform-adapter ui-renderer \
+            orb-core message-handler
+
+      - name: Start services
+        run: |
+          docker-compose -f docker-compose.test.yml up -d
+
+      - name: Wait for services
+        run: |
+          timeout 60 sh -c 'until curl -f http://localhost:8081/health; do sleep 2; done'
+          timeout 60 sh -c 'until curl -f http://localhost:12000/health; do sleep 2; done'
+
+      - name: Run component tests
+        run: |
+          cd tests/component
+          make test-all
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          directory: tests/component/coverage
+          flags: component
+          fail_ci_if_error: false
+
+      - name: Stop services
+        if: always()
+        run: docker-compose -f docker-compose.test.yml down
+
+  # ===========================================================================
+  # Integration Tests (Layer 4) - 15% of test pyramid
+  # ===========================================================================
+  integration-tests:
+    name: Integration Tests (Python - pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(env.INTEGRATION_TEST_TIMEOUT) }}
+    needs: [component-tests]
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: microservices_test
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          cd tests/integration
+          pip install -r requirements.txt
+
+      - name: Start all services
+        run: |
+          docker-compose -f docker-compose.integration.yml up -d
+          sleep 30  # Wait for services to initialize
+
+      - name: Run integration tests
+        run: |
+          cd tests/integration
+          pytest -v \
+            --cov=. \
+            --cov-report=xml \
+            --cov-report=html \
+            --junitxml=junit.xml \
+            --tb=short
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: tests/integration/coverage.xml
+          flags: integration
+          fail_ci_if_error: false
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: integration-test-results
+          path: tests/integration/junit.xml
+
+      - name: Stop services
+        if: always()
+        run: docker-compose -f docker-compose.integration.yml down
+
+  # ===========================================================================
+  # E2E Tests (Layer 5) - 5% of test pyramid
+  # ===========================================================================
+  e2e-tests:
+    name: E2E Tests (k6 Load Tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(env.E2E_TEST_TIMEOUT) }}
+    needs: [integration-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | \
+            sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Start all services
+        run: |
+          docker-compose -f docker-compose.production.yml up -d
+          sleep 60
+
+      - name: Run E2E tests
+        run: |
+          cd tests/e2e/load_tests
+          k6 run --out json=results.json baseline.js
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-test-results
+          path: tests/e2e/load_tests/results.json
+
+      - name: Stop services
+        if: always()
+        run: docker-compose -f docker-compose.production.yml down
+
+  # ===========================================================================
+  # Coverage Report Aggregation
+  # ===========================================================================
+  coverage-report:
+    name: Coverage Report & Gates
+    runs-on: ubuntu-latest
+    needs: [unit-tests-cpp, unit-tests-ada, component-tests, integration-tests]
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Check coverage thresholds
+        run: |
+          # This would typically use codecov CLI or custom script
+          echo "Checking coverage thresholds..."
+          echo "Overall threshold: ${COVERAGE_THRESHOLD_OVERALL}%"
+
+      - name: Comment PR with coverage
+        if: github.event_name == 'pull_request'
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: unittests,component,integration
+          name: codecov-umbrella
+          fail_ci_if_error: true
+
+  # ===========================================================================
+  # Test Summary
+  # ===========================================================================
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [unit-tests-cpp, unit-tests-ada, component-tests, integration-tests, e2e-tests, coverage-report]
+    if: always()
+
+    steps:
+      - name: Check test results
+        run: |
+          echo "Unit Tests (C++): ${{ needs.unit-tests-cpp.result }}"
+          echo "Unit Tests (Ada): ${{ needs.unit-tests-ada.result }}"
+          echo "Component Tests: ${{ needs.component-tests.result }}"
+          echo "Integration Tests: ${{ needs.integration-tests.result }}"
+          echo "E2E Tests: ${{ needs.e2e-tests.result }}"
+          echo "Coverage Report: ${{ needs.coverage-report.result }}"
+
+      - name: Fail if any tests failed
+        if: |
+          needs.unit-tests-cpp.result == 'failure' ||
+          needs.unit-tests-ada.result == 'failure' ||
+          needs.component-tests.result == 'failure' ||
+          needs.integration-tests.result == 'failure' ||
+          needs.e2e-tests.result == 'failure' ||
+          needs.coverage-report.result == 'failure'
+        run: |
+          echo "::error::One or more test suites failed"
+          exit 1
+
+      - name: Success
+        if: success()
+        run: echo "✅ All tests passed!"

@@ -1,0 +1,339 @@
+name: Contract Testing (Pact CDC)
+
+# Task: 57fbde - Comprehensive Test Framework / RDB-002
+# Purpose: Consumer-Driven Contract testing with Pact Broker
+# Layer 3: Contract Tests (10% of test pyramid)
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'services/**'
+      - 'tests/contracts/**'
+      - '.github/workflows/contract-testing.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'services/**'
+      - 'tests/contracts/**'
+  workflow_dispatch:
+
+env:
+  PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL || 'http://localhost:9292' }}
+  PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_USERNAME || 'pactbroker' }}
+  PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD || 'pactbroker' }}
+  CONSUMER_VERSION: ${{ github.sha }}
+  GIT_BRANCH: ${{ github.ref_name }}
+
+jobs:
+  # ===========================================================================
+  # Start Pact Broker (for local/PR builds)
+  # ===========================================================================
+  start-pact-broker:
+    name: Start Pact Broker
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start Pact Broker
+        run: |
+          docker-compose -f tests/contracts/docker-compose.pact-broker.yml up -d
+          sleep 15
+
+      - name: Verify Pact Broker is running
+        run: |
+          curl -u pactbroker:pactbroker http://localhost:9292
+          curl http://localhost:9292/diagnostic/status/heartbeat
+
+  # ===========================================================================
+  # Consumer Tests (Generate Contracts)
+  # ===========================================================================
+  consumer-tests:
+    name: Consumer Tests (${{ matrix.consumer }})
+    runs-on: ubuntu-latest
+    needs: [start-pact-broker]
+    if: always()
+
+    strategy:
+      matrix:
+        consumer:
+          - api_gateway
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: tests/contracts/consumers/${{ matrix.consumer }}/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd tests/contracts/consumers/${{ matrix.consumer }}
+          npm ci
+
+      - name: Run consumer tests (generate contracts)
+        run: |
+          cd tests/contracts/consumers/${{ matrix.consumer }}
+          npm test
+
+      - name: Verify pact files generated
+        run: |
+          cd tests/contracts/consumers/${{ matrix.consumer }}
+          ls -la pacts/
+          if [ ! -d "pacts" ] || [ -z "$(ls -A pacts)" ]; then
+            echo "Error: No pact files generated"
+            exit 1
+          fi
+
+      - name: Upload pact files as artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: pacts-${{ matrix.consumer }}
+          path: tests/contracts/consumers/${{ matrix.consumer }}/pacts/*.json
+
+      - name: Publish contracts to Pact Broker
+        run: |
+          cd tests/contracts/consumers/${{ matrix.consumer }}
+          npx pact-broker publish ./pacts \
+            --consumer-app-version=${{ env.CONSUMER_VERSION }} \
+            --broker-base-url=${{ env.PACT_BROKER_URL }} \
+            --broker-username=${{ env.PACT_BROKER_USERNAME }} \
+            --broker-password=${{ env.PACT_BROKER_PASSWORD }} \
+            --tag=${{ env.GIT_BRANCH }}
+
+  # ===========================================================================
+  # Can-I-Deploy Check (Consumer)
+  # ===========================================================================
+  can-i-deploy-consumer:
+    name: Can-I-Deploy Check (Consumer)
+    runs-on: ubuntu-latest
+    needs: [consumer-tests]
+
+    strategy:
+      matrix:
+        consumer: [APIGateway]
+      fail-fast: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Pact CLI
+        run: npm install -g @pact-foundation/pact-node
+
+      - name: Can-I-Deploy check
+        run: |
+          npx pact-broker can-i-deploy \
+            --pacticipant=${{ matrix.consumer }} \
+            --version=${{ env.CONSUMER_VERSION }} \
+            --to-environment=test \
+            --broker-base-url=${{ env.PACT_BROKER_URL }} \
+            --broker-username=${{ env.PACT_BROKER_USERNAME }} \
+            --broker-password=${{ env.PACT_BROKER_PASSWORD }}
+
+      - name: Record deployment (test environment)
+        if: success()
+        run: |
+          npx pact-broker record-deployment \
+            --pacticipant=${{ matrix.consumer }} \
+            --version=${{ env.CONSUMER_VERSION }} \
+            --environment=test \
+            --broker-base-url=${{ env.PACT_BROKER_URL }} \
+            --broker-username=${{ env.PACT_BROKER_USERNAME }} \
+            --broker-password=${{ env.PACT_BROKER_PASSWORD }}
+
+  # ===========================================================================
+  # Provider Verification
+  # ===========================================================================
+  provider-verification:
+    name: Provider Verification (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    needs: [consumer-tests]
+
+    strategy:
+      matrix:
+        provider:
+          - widget-core
+          - orb-core
+          - security-service
+      fail-fast: false
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: microservices_test
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Start provider service
+        run: |
+          docker-compose -f docker-compose.test.yml up -d ${{ matrix.provider }}
+          sleep 20
+
+      - name: Verify provider is running
+        run: |
+          case "${{ matrix.provider }}" in
+            widget-core)
+              curl -f http://localhost:8081/health || exit 1
+              ;;
+            orb-core)
+              curl -f http://localhost:12000/api/v1/health || exit 1
+              ;;
+            security-service)
+              curl -f http://localhost:8082/health || exit 1
+              ;;
+          esac
+
+      - name: Install provider test dependencies
+        run: |
+          cd tests/contracts/providers/${{ matrix.provider }}
+          npm ci
+
+      - name: Run provider verification
+        env:
+          PROVIDER_URL: ${{ matrix.provider == 'widget-core' && 'http://localhost:8081' || matrix.provider == 'orb-core' && 'http://localhost:12000' || 'http://localhost:8082' }}
+          PROVIDER_VERSION: ${{ github.sha }}
+          PACT_BROKER_URL: ${{ env.PACT_BROKER_URL }}
+          PACT_BROKER_USERNAME: ${{ env.PACT_BROKER_USERNAME }}
+          PACT_BROKER_PASSWORD: ${{ env.PACT_BROKER_PASSWORD }}
+          GIT_BRANCH: ${{ env.GIT_BRANCH }}
+        run: |
+          cd tests/contracts/providers/${{ matrix.provider }}
+          npm test
+
+      - name: Stop provider service
+        if: always()
+        run: docker-compose -f docker-compose.test.yml down
+
+  # ===========================================================================
+  # Can-I-Deploy Check (Provider)
+  # ===========================================================================
+  can-i-deploy-provider:
+    name: Can-I-Deploy Check (Provider)
+    runs-on: ubuntu-latest
+    needs: [provider-verification]
+
+    strategy:
+      matrix:
+        provider: [WidgetCore, ORBCore, SecurityService]
+      fail-fast: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Pact CLI
+        run: npm install -g @pact-foundation/pact-node
+
+      - name: Can-I-Deploy check
+        run: |
+          npx pact-broker can-i-deploy \
+            --pacticipant=${{ matrix.provider }} \
+            --version=${{ github.sha }} \
+            --to-environment=test \
+            --broker-base-url=${{ env.PACT_BROKER_URL }} \
+            --broker-username=${{ env.PACT_BROKER_USERNAME }} \
+            --broker-password=${{ env.PACT_BROKER_PASSWORD }}
+
+      - name: Record deployment (test environment)
+        if: success()
+        run: |
+          npx pact-broker record-deployment \
+            --pacticipant=${{ matrix.provider }} \
+            --version=${{ github.sha }} \
+            --environment=test \
+            --broker-base-url=${{ env.PACT_BROKER_URL }} \
+            --broker-username=${{ env.PACT_BROKER_USERNAME }} \
+            --broker-password=${{ env.PACT_BROKER_PASSWORD }}
+
+  # ===========================================================================
+  # Contract Test Summary
+  # ===========================================================================
+  contract-test-summary:
+    name: Contract Test Summary
+    runs-on: ubuntu-latest
+    needs: [consumer-tests, provider-verification, can-i-deploy-consumer, can-i-deploy-provider]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "Consumer Tests: ${{ needs.consumer-tests.result }}"
+          echo "Provider Verification: ${{ needs.provider-verification.result }}"
+          echo "Can-I-Deploy (Consumer): ${{ needs.can-i-deploy-consumer.result }}"
+          echo "Can-I-Deploy (Provider): ${{ needs.can-i-deploy-provider.result }}"
+
+      - name: Fail if any contracts failed
+        if: |
+          needs.consumer-tests.result == 'failure' ||
+          needs.provider-verification.result == 'failure' ||
+          needs.can-i-deploy-consumer.result == 'failure' ||
+          needs.can-i-deploy-provider.result == 'failure'
+        run: |
+          echo "::error::Contract tests failed"
+          exit 1
+
+      - name: Success
+        if: success()
+        run: echo "✅ All contract tests passed!"
+
+      - name: Comment PR with Pact Broker link
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Contract Testing Results\n\n✅ All contract tests passed!\n\nView contracts in Pact Broker:\n- [Relationships](${process.env.PACT_BROKER_URL}/ui/relationships)\n- [Consumer: APIGateway](${process.env.PACT_BROKER_URL}/hal-browser/browser.html#${process.env.PACT_BROKER_URL}/pacticipants/APIGateway)\n- [Provider: WidgetCore](${process.env.PACT_BROKER_URL}/hal-browser/browser.html#${process.env.PACT_BROKER_URL}/pacticipants/WidgetCore)`
+            })
+
+  # ===========================================================================
+  # Cleanup
+  # ===========================================================================
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [contract-test-summary]
+    if: always() && github.event_name == 'pull_request'
+
+    steps:
+      - name: Stop Pact Broker
+        run: |
+          docker-compose -f tests/contracts/docker-compose.pact-broker.yml down -v

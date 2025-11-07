@@ -1,0 +1,551 @@
+# Prometheus AlertRules
+# Task: bd88ec - Deploy observability stack (Prometheus, Grafana, Loki, Jaeger)
+#
+# Deploy:
+#   kubectl apply -f prometheus-alert-rules.yaml -n observability
+#
+# Verify:
+#   kubectl get prometheusrule -n observability
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: microservices-alert-rules
+  namespace: observability
+  labels:
+    prometheus: monitoring
+    role: alert-rules
+    app.kubernetes.io/part-of: observability
+spec:
+  groups:
+    # ==========================================================================
+    # SERVICE AVAILABILITY ALERTS (CRITICAL)
+    # ==========================================================================
+    - name: service_availability
+      interval: 30s
+      rules:
+        - alert: ServiceDown
+          expr: up{job=~"wxwidgets-services|polyorb-services"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: availability
+          annotations:
+            summary: "Service {{ $labels.service }} is down"
+            description: |
+              Service {{ $labels.service }} on instance {{ $labels.instance }} has been down for more than 2 minutes.
+              Current status: {{ $value }}
+            runbook_url: "https://docs.example.com/runbooks/service-down"
+            dashboard_url: "https://grafana.example.com/d/overview"
+
+        - alert: MultipleServicesDown
+          expr: count(up{job=~"wxwidgets-services|polyorb-services"} == 0) > 3
+          for: 1m
+          labels:
+            severity: critical
+            category: availability
+          annotations:
+            summary: "Multiple services are down ({{ $value }} services)"
+            description: |
+              {{ $value }} services are currently down. This may indicate a cluster-wide issue.
+              Check infrastructure status immediately.
+            runbook_url: "https://docs.example.com/runbooks/multiple-services-down"
+
+        - alert: ServiceFlapping
+          expr: changes(up{job=~"wxwidgets-services|polyorb-services"}[15m]) > 5
+          for: 5m
+          labels:
+            severity: high
+            category: availability
+          annotations:
+            summary: "Service {{ $labels.service }} is flapping"
+            description: |
+              Service {{ $labels.service }} has changed state {{ $value }} times in the last 15 minutes.
+              This indicates instability. Check pod logs and resource usage.
+            runbook_url: "https://docs.example.com/runbooks/service-flapping"
+
+    # ==========================================================================
+    # SLO VIOLATION ALERTS (CRITICAL/HIGH)
+    # ==========================================================================
+    - name: slo_violations
+      interval: 1m
+      rules:
+        - alert: AvailabilitySLOViolation
+          expr: |
+            avg_over_time((sum(up{job=~"wxwidgets-services|polyorb-services"}) / count(up{job=~"wxwidgets-services|polyorb-services"}))[1h:5m]) < 0.999
+          for: 5m
+          labels:
+            severity: critical
+            category: slo
+          annotations:
+            summary: "Availability SLO violated (current: {{ $value | humanizePercentage }})"
+            description: |
+              System availability is {{ $value | humanizePercentage }}, below SLO target of 99.9%.
+              Error budget is being consumed.
+            runbook_url: "https://docs.example.com/runbooks/availability-slo"
+
+        - alert: LatencySLOViolation
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket{job=~"wxwidgets-services|polyorb-services"}[5m])) by (le, service)
+            ) > 0.5
+          for: 10m
+          labels:
+            severity: high
+            category: slo
+          annotations:
+            summary: "P95 latency SLO violated for {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} P95 latency is {{ $value }}s, above SLO target of 500ms.
+              Current latency: {{ $value | humanizeDuration }}
+            runbook_url: "https://docs.example.com/runbooks/latency-slo"
+
+        - alert: ErrorRateSLOViolation
+          expr: |
+            (
+              sum(rate(http_requests_total{job=~"wxwidgets-services|polyorb-services", status=~"5.."}[5m])) by (service)
+              /
+              sum(rate(http_requests_total{job=~"wxwidgets-services|polyorb-services"}[5m])) by (service)
+            ) > 0.01
+          for: 5m
+          labels:
+            severity: high
+            category: slo
+          annotations:
+            summary: "Error rate SLO violated for {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} error rate is {{ $value | humanizePercentage }}, above SLO target of 1%.
+              Check service logs for error patterns.
+            runbook_url: "https://docs.example.com/runbooks/error-rate-slo"
+
+        - alert: ErrorBudgetExhausted
+          expr: |
+            (
+              1 - (
+                (1 - avg_over_time((sum(up{job=~"wxwidgets-services|polyorb-services"}) / count(up{job=~"wxwidgets-services|polyorb-services"}))[30d]))
+                / (1 - 0.999)
+              )
+            ) < 0
+          for: 5m
+          labels:
+            severity: critical
+            category: slo
+          annotations:
+            summary: "Error budget exhausted for the month"
+            description: |
+              The monthly error budget has been exhausted. No more downtime is allowed this month.
+              Current error budget: {{ $value | humanizePercentage }}
+            runbook_url: "https://docs.example.com/runbooks/error-budget"
+
+    # ==========================================================================
+    # LATENCY ALERTS (HIGH/MEDIUM)
+    # ==========================================================================
+    - name: latency_alerts
+      interval: 1m
+      rules:
+        - alert: HighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+            ) > 1
+          for: 5m
+          labels:
+            severity: high
+            category: performance
+          annotations:
+            summary: "High P95 latency for {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} P95 latency is {{ $value }}s.
+              This is twice the SLO target. Investigate immediately.
+            runbook_url: "https://docs.example.com/runbooks/high-latency"
+
+        - alert: LatencySpike
+          expr: |
+            (
+              histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))
+              /
+              histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m] offset 1h)) by (le, service))
+            ) > 2
+          for: 3m
+          labels:
+            severity: medium
+            category: performance
+          annotations:
+            summary: "Latency spike detected for {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} latency has increased by {{ $value }}x compared to 1 hour ago.
+              Current P95: {{ $value }}s
+            runbook_url: "https://docs.example.com/runbooks/latency-spike"
+
+    # ==========================================================================
+    # ERROR RATE ALERTS (HIGH/MEDIUM)
+    # ==========================================================================
+    - name: error_rate_alerts
+      interval: 1m
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            (
+              sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+              /
+              sum(rate(http_requests_total[5m])) by (service)
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: high
+            category: reliability
+          annotations:
+            summary: "High error rate for {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} error rate is {{ $value | humanizePercentage }}.
+              This is 5x above the SLO target. Check logs immediately.
+            runbook_url: "https://docs.example.com/runbooks/high-error-rate"
+
+        - alert: ErrorRateSpike
+          expr: |
+            (
+              sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+              /
+              sum(rate(http_requests_total[5m])) by (service)
+            ) > 2 * (
+              sum(rate(http_requests_total{status=~"5.."} offset 1h[5m])) by (service)
+              /
+              sum(rate(http_requests_total offset 1h[5m])) by (service)
+            )
+          for: 3m
+          labels:
+            severity: medium
+            category: reliability
+          annotations:
+            summary: "Error rate spike for {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} error rate has doubled compared to 1 hour ago.
+              Current error rate: {{ $value | humanizePercentage }}
+            runbook_url: "https://docs.example.com/runbooks/error-spike"
+
+        - alert: NoRequests
+          expr: |
+            sum(rate(http_requests_total[5m])) by (service) == 0
+          for: 10m
+          labels:
+            severity: medium
+            category: traffic
+          annotations:
+            summary: "No requests to {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} has received no requests in the last 10 minutes.
+              This may indicate a routing or discovery issue.
+            runbook_url: "https://docs.example.com/runbooks/no-requests"
+
+    # ==========================================================================
+    # RESOURCE USAGE ALERTS (HIGH/MEDIUM)
+    # ==========================================================================
+    - name: resource_usage_alerts
+      interval: 1m
+      rules:
+        - alert: HighCPUUsage
+          expr: |
+            sum(rate(container_cpu_usage_seconds_total{pod=~".*wxwidgets.*|.*polyorb.*"}[5m])) by (pod)
+            /
+            sum(container_spec_cpu_quota{pod=~".*wxwidgets.*|.*polyorb.*"} / container_spec_cpu_period{pod=~".*wxwidgets.*|.*polyorb.*"}) by (pod)
+            > 0.9
+          for: 10m
+          labels:
+            severity: high
+            category: resources
+          annotations:
+            summary: "High CPU usage for {{ $labels.pod }}"
+            description: |
+              Pod {{ $labels.pod }} CPU usage is {{ $value | humanizePercentage }}.
+              Consider scaling or optimizing the service.
+            runbook_url: "https://docs.example.com/runbooks/high-cpu"
+
+        - alert: HighMemoryUsage
+          expr: |
+            sum(container_memory_working_set_bytes{pod=~".*wxwidgets.*|.*polyorb.*"}) by (pod)
+            /
+            sum(container_spec_memory_limit_bytes{pod=~".*wxwidgets.*|.*polyorb.*"}) by (pod)
+            > 0.9
+          for: 10m
+          labels:
+            severity: high
+            category: resources
+          annotations:
+            summary: "High memory usage for {{ $labels.pod }}"
+            description: |
+              Pod {{ $labels.pod }} memory usage is {{ $value | humanizePercentage }}.
+              Pod may be approaching OOMKill.
+            runbook_url: "https://docs.example.com/runbooks/high-memory"
+
+        - alert: PodOOMKilled
+          expr: |
+            increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled", pod=~".*wxwidgets.*|.*polyorb.*"}[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+            category: resources
+          annotations:
+            summary: "Pod {{ $labels.pod }} was OOMKilled"
+            description: |
+              Container {{ $labels.container }} in pod {{ $labels.pod }} was killed due to OOM.
+              Increase memory limits or investigate memory leak.
+            runbook_url: "https://docs.example.com/runbooks/oomkilled"
+
+        - alert: PodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{pod=~".*wxwidgets.*|.*polyorb.*"}[15m]) > 0.1
+          for: 5m
+          labels:
+            severity: high
+            category: stability
+          annotations:
+            summary: "Pod {{ $labels.pod }} is crash looping"
+            description: |
+              Pod {{ $labels.pod }} has restarted {{ $value }} times in the last 15 minutes.
+              Check pod logs for crash reasons.
+            runbook_url: "https://docs.example.com/runbooks/crash-loop"
+
+    # ==========================================================================
+    # DATABASE ALERTS (HIGH/MEDIUM)
+    # ==========================================================================
+    - name: database_alerts
+      interval: 1m
+      rules:
+        - alert: PostgreSQLDown
+          expr: pg_up == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: database
+          annotations:
+            summary: "PostgreSQL instance is down"
+            description: |
+              PostgreSQL instance {{ $labels.instance }} is down.
+              All database-dependent services will fail.
+            runbook_url: "https://docs.example.com/runbooks/postgres-down"
+
+        - alert: PostgreSQLHighConnections
+          expr: |
+            sum(pg_stat_activity_count) by (instance)
+            /
+            sum(pg_settings_max_connections) by (instance)
+            > 0.8
+          for: 5m
+          labels:
+            severity: high
+            category: database
+          annotations:
+            summary: "PostgreSQL connection count is high"
+            description: |
+              PostgreSQL instance {{ $labels.instance }} is using {{ $value | humanizePercentage }} of max connections.
+              Connection pool exhaustion imminent.
+            runbook_url: "https://docs.example.com/runbooks/postgres-connections"
+
+        - alert: PostgreSQLSlowQueries
+          expr: |
+            rate(pg_stat_activity_max_tx_duration{state="active"}[5m]) > 60
+          for: 5m
+          labels:
+            severity: medium
+            category: database
+          annotations:
+            summary: "PostgreSQL has slow queries"
+            description: |
+              PostgreSQL instance {{ $labels.instance }} has queries running for more than 60 seconds.
+              This may impact application performance.
+            runbook_url: "https://docs.example.com/runbooks/slow-queries"
+
+    # ==========================================================================
+    # REDIS ALERTS (HIGH/MEDIUM)
+    # ==========================================================================
+    - name: redis_alerts
+      interval: 1m
+      rules:
+        - alert: RedisDown
+          expr: redis_up == 0
+          for: 2m
+          labels:
+            severity: critical
+            category: cache
+          annotations:
+            summary: "Redis instance is down"
+            description: |
+              Redis instance {{ $labels.instance }} is down.
+              Cache-dependent services will experience degraded performance.
+            runbook_url: "https://docs.example.com/runbooks/redis-down"
+
+        - alert: RedisHighMemoryUsage
+          expr: |
+            redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+          for: 5m
+          labels:
+            severity: high
+            category: cache
+          annotations:
+            summary: "Redis memory usage is high"
+            description: |
+              Redis instance {{ $labels.instance }} memory usage is {{ $value | humanizePercentage }}.
+              Cache eviction may begin soon.
+            runbook_url: "https://docs.example.com/runbooks/redis-memory"
+
+        - alert: RedisLowHitRate
+          expr: |
+            rate(redis_keyspace_hits_total[5m])
+            /
+            (rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m]))
+            < 0.8
+          for: 10m
+          labels:
+            severity: medium
+            category: cache
+          annotations:
+            summary: "Redis cache hit rate is low"
+            description: |
+              Redis instance {{ $labels.instance }} hit rate is {{ $value | humanizePercentage }}.
+              Cache effectiveness is degraded. Check TTL settings.
+            runbook_url: "https://docs.example.com/runbooks/redis-hit-rate"
+
+    # ==========================================================================
+    # SECURITY ALERTS (CRITICAL/HIGH)
+    # ==========================================================================
+    - name: security_alerts
+      interval: 1m
+      rules:
+        - alert: HighAuthenticationFailures
+          expr: |
+            sum(rate(authentication_failures_total[5m])) by (service) > 10
+          for: 5m
+          labels:
+            severity: high
+            category: security
+          annotations:
+            summary: "High authentication failure rate for {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} has {{ $value }} authentication failures per second.
+              This may indicate a brute force attack.
+            runbook_url: "https://docs.example.com/runbooks/auth-failures"
+
+        - alert: UnauthorizedAccessAttempts
+          expr: |
+            sum(rate(http_requests_total{status="403"}[5m])) by (service) > 5
+          for: 3m
+          labels:
+            severity: high
+            category: security
+          annotations:
+            summary: "High rate of unauthorized access attempts to {{ $labels.service }}"
+            description: |
+              Service {{ $labels.service }} is receiving {{ $value }} 403 responses per second.
+              Check access logs for suspicious activity.
+            runbook_url: "https://docs.example.com/runbooks/unauthorized-access"
+
+        - alert: SecurityServiceDown
+          expr: up{service="security-service"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            category: security
+          annotations:
+            summary: "Security Service is down"
+            description: |
+              The Security Service is down. Authentication and authorization may fail.
+              This is a critical service - restore immediately.
+            runbook_url: "https://docs.example.com/runbooks/security-service-down"
+
+    # ==========================================================================
+    # KUBERNETES ALERTS (CRITICAL/HIGH)
+    # ==========================================================================
+    - name: kubernetes_alerts
+      interval: 1m
+      rules:
+        - alert: NodeNotReady
+          expr: kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "Node {{ $labels.node }} is not ready"
+            description: |
+              Kubernetes node {{ $labels.node }} has been in NotReady state for 5 minutes.
+              Pods may be evicted from this node.
+            runbook_url: "https://docs.example.com/runbooks/node-not-ready"
+
+        - alert: PodPending
+          expr: |
+            sum(kube_pod_status_phase{phase="Pending", pod=~".*wxwidgets.*|.*polyorb.*"}) by (pod, namespace) > 0
+          for: 10m
+          labels:
+            severity: high
+            category: infrastructure
+          annotations:
+            summary: "Pod {{ $labels.pod }} stuck in Pending state"
+            description: |
+              Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been Pending for 10 minutes.
+              Check resource availability and pod events.
+            runbook_url: "https://docs.example.com/runbooks/pod-pending"
+
+        - alert: PersistentVolumeClaimPending
+          expr: |
+            kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1
+          for: 10m
+          labels:
+            severity: high
+            category: storage
+          annotations:
+            summary: "PVC {{ $labels.persistentvolumeclaim }} is pending"
+            description: |
+              PVC {{ $labels.persistentvolumeclaim }} has been in Pending state for 10 minutes.
+              Storage provisioning may have failed.
+            runbook_url: "https://docs.example.com/runbooks/pvc-pending"
+
+---
+# Recording Rules (for performance optimization)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: microservices-recording-rules
+  namespace: observability
+  labels:
+    prometheus: monitoring
+    role: recording-rules
+    app.kubernetes.io/part-of: observability
+spec:
+  groups:
+    - name: http_recording_rules
+      interval: 30s
+      rules:
+        # Request rate by service (5m)
+        - record: job:http_requests:rate5m
+          expr: sum(rate(http_requests_total[5m])) by (job, service)
+
+        # Error rate by service (5m)
+        - record: job:http_errors:rate5m
+          expr: sum(rate(http_requests_total{status=~"5.."}[5m])) by (job, service)
+
+        # P50 latency by service
+        - record: job:http_request_duration:p50
+          expr: histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))
+
+        # P95 latency by service
+        - record: job:http_request_duration:p95
+          expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))
+
+        # P99 latency by service
+        - record: job:http_request_duration:p99
+          expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))
+
+    - name: availability_recording_rules
+      interval: 1m
+      rules:
+        # Service availability (1h)
+        - record: service:up:avg1h
+          expr: avg_over_time(up[1h])
+
+        # Service availability (24h)
+        - record: service:up:avg24h
+          expr: avg_over_time(up[24h])
+
+        # Service availability (7d)
+        - record: service:up:avg7d
+          expr: avg_over_time(up[7d])

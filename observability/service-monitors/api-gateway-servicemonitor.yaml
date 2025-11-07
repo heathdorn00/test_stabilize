@@ -1,0 +1,99 @@
+# ServiceMonitor for API Gateway
+# Task: bd88ec - Deploy observability stack
+#
+# Deploy:
+#   kubectl apply -f api-gateway-servicemonitor.yaml -n microservices
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api-gateway
+  namespace: microservices
+  labels:
+    prometheus: monitoring
+    app: api-gateway
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: microservices
+    app_type: wxwidgets
+spec:
+  # Selector to match the Service
+  selector:
+    matchLabels:
+      app: api-gateway
+      app_type: wxwidgets
+
+  # Namespace selector (optional - defaults to same namespace as ServiceMonitor)
+  namespaceSelector:
+    matchNames:
+      - microservices
+
+  # Endpoints to scrape
+  endpoints:
+    - port: metrics
+      interval: 15s        # Critical service - scrape every 15 seconds
+      scrapeTimeout: 10s
+      path: /metrics
+      scheme: http
+
+      # Relabeling rules
+      relabelings:
+        # Add service label
+        - sourceLabels: [__meta_kubernetes_service_label_app]
+          targetLabel: service
+          action: replace
+
+        # Add namespace label
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+          action: replace
+
+        # Add pod label
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+          action: replace
+
+        # Add node label
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace
+
+        # Add version label from pod annotation
+        - sourceLabels: [__meta_kubernetes_pod_annotation_version]
+          targetLabel: version
+          action: replace
+
+      # Metric relabeling (applied to scraped metrics)
+      metricRelabelings:
+        # Drop metrics we don't need
+        - sourceLabels: [__name__]
+          regex: 'go_.*'
+          action: drop
+
+        # Add app_type label to all metrics
+        - targetLabel: app_type
+          replacement: 'wxwidgets'
+          action: replace
+
+---
+# Service definition (if not already exists)
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: microservices
+  labels:
+    app: api-gateway
+    app_type: wxwidgets
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  type: ClusterIP

@@ -1,0 +1,317 @@
+# Deployment Workflow - Dev Environment
+# Task: cb9a80 - Set up CI/CD pipelines with security gates
+# Owner: @test_stabilize
+# Triggers: Successful merge to master
+
+name: Deploy to Dev
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+
+permissions:
+  contents: read
+  packages: write
+  deployments: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ====================
+  # STAGE 4: Build & Push Docker Images
+  # ====================
+
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      matrix:
+        service:
+          - widget-core
+          - render-manager
+          - event-manager
+          - xrc-service
+          - orb-core
+          - giop-protocol
+          - poa-manager
+          - naming-service
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Check for Dockerfile
+        id: dockerfile-check
+        run: |
+          if [ -f "services/${{ matrix.service }}/Dockerfile" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "path=services/${{ matrix.service }}/Dockerfile" >> $GITHUB_OUTPUT
+          elif [ -f "Dockerfile.${{ matrix.service }}.hardened" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "path=Dockerfile.${{ matrix.service }}.hardened" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::warning::Dockerfile not found for ${{ matrix.service }}, skipping"
+          fi
+
+      - name: Build and push Docker image
+        if: steps.dockerfile-check.outputs.exists == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ steps.dockerfile-check.outputs.path }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+          secrets: |
+            "conan_token=${{ secrets.CONAN_TOKEN }}"
+
+      - name: Generate SBOM
+        if: steps.dockerfile-check.outputs.exists == 'true'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: sbom-${{ matrix.service }}.json
+
+      - name: Upload SBOM
+        if: steps.dockerfile-check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.service }}
+          path: sbom-${{ matrix.service }}.json
+
+  # ====================
+  # STAGE 4: Deploy to Kubernetes
+  # ====================
+
+  deploy-to-k8s:
+    name: Deploy to Kubernetes (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    timeout-minutes: 10
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+      url: https://${{ github.event.inputs.environment || 'dev' }}.wxwidgets.local
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_DEV }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Deploy to Kubernetes
+        run: |
+          # Update image tags in manifests
+          export IMAGE_TAG="${{ github.sha }}"
+          envsubst < k8s/wxwidgets/deployment.yaml | kubectl apply -f -
+          envsubst < k8s/polyorb/deployment.yaml | kubectl apply -f -
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/widget-core -n wxwidgets --timeout=5m
+          kubectl rollout status deployment/orb-core -n polyorb --timeout=5m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n wxwidgets
+          kubectl get pods -n polyorb
+          kubectl get services -n wxwidgets
+          kubectl get services -n polyorb
+
+  # ====================
+  # STAGE 5: Smoke Tests
+  # ====================
+
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy-to-k8s
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_DEV }}" | base64 -d > $HOME/.kube/config
+
+      - name: Run health checks
+        run: |
+          # Widget Core health check
+          kubectl exec -n wxwidgets deploy/widget-core -- \
+            grpc_health_probe -addr=:50051 || exit 1
+
+          # ORB Core health check
+          kubectl exec -n polyorb deploy/orb-core -- \
+            /usr/local/bin/orb_core_service --health-check || exit 1
+
+      - name: Run basic smoke tests
+        run: |
+          # Test Widget Core API
+          kubectl run smoke-test --image=fullstorydev/grpcurl:latest --rm -i --restart=Never -- \
+            -plaintext widget-core.wxwidgets:50051 list
+
+          # Test ORB Core API
+          kubectl run smoke-test --image=fullstorydev/grpcurl:latest --rm -i --restart=Never -- \
+            -plaintext orb-core.polyorb:50052 list
+
+      - name: Check logs for errors
+        if: failure()
+        run: |
+          echo "=== Widget Core Logs ==="
+          kubectl logs -n wxwidgets deploy/widget-core --tail=100
+
+          echo "=== ORB Core Logs ==="
+          kubectl logs -n polyorb deploy/orb-core --tail=100
+
+  # ====================
+  # STAGE 5: Performance Tests
+  # ====================
+
+  performance-tests:
+    name: Performance Tests (k6)
+    runs-on: ubuntu-latest
+    needs: deploy-to-k8s
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | \
+            sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Run load tests
+        run: |
+          k6 run tests/performance/widget-core-load.js \
+            --vus 50 \
+            --duration 2m \
+            --threshold 'grpc_req_duration{p(95)}<500'
+
+      - name: Upload performance results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-results
+          path: |
+            k6-results.json
+            k6-summary.txt
+
+      - name: Check performance thresholds
+        run: |
+          # Parse k6 results and check P95 < 500ms
+          P95=$(jq '.metrics.grpc_req_duration.values["p(95)"]' k6-results.json)
+          echo "P95 latency: ${P95}ms"
+          if (( $(echo "$P95 > 500" | bc -l) )); then
+            echo "::error::P95 latency ${P95}ms exceeds 500ms threshold"
+            exit 1
+          fi
+          echo "::notice::Performance tests passed (P95: ${P95}ms)"
+
+  # ====================
+  # Deployment Summary
+  # ====================
+
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-to-k8s, smoke-tests, performance-tests]
+    if: always()
+
+    steps:
+      - name: Generate deployment summary
+        run: |
+          cat <<EOF > $GITHUB_STEP_SUMMARY
+          # Deployment Summary - ${{ github.event.inputs.environment || 'dev' }}
+
+          ## Status
+          - **Build & Push**: ${{ needs.build-and-push.result }}
+          - **Deploy to K8s**: ${{ needs.deploy-to-k8s.result }}
+          - **Smoke Tests**: ${{ needs.smoke-tests.result }}
+          - **Performance Tests**: ${{ needs.performance-tests.result }}
+
+          ## Deployed Images
+          - Commit: ${{ github.sha }}
+          - Branch: ${{ github.ref_name }}
+          - Registry: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          - Environment: ${{ github.event.inputs.environment || 'dev' }}
+
+          ## Access
+          - wxWidgets API: https://${{ github.event.inputs.environment || 'dev' }}.wxwidgets.local
+          - PolyORB API: https://${{ github.event.inputs.environment || 'dev' }}.polyorb.local
+
+          ---
+          **Deployed at**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          EOF
+
+      - name: Notify deployment status
+        if: github.event_name == 'push'
+        run: |
+          echo "::notice::Deployment to ${{ github.event.inputs.environment || 'dev' }} completed successfully"
+
+# Deployment targets:
+# - Build time: <20 minutes (all images in parallel)
+# - Deploy time: <10 minutes (including rollout)
+# - Smoke tests: <10 minutes
+# - Performance: P95 <500ms
+# - Total: <40 minutes

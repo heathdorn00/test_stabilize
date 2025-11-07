@@ -1,0 +1,533 @@
+# Loki Stack Helm Values (grafana/loki-stack)
+# Task: bd88ec - Deploy observability stack (Prometheus, Grafana, Loki, Jaeger)
+# Chart: grafana/loki-stack
+# Version: 2.10.x+
+#
+# Deploy:
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm repo update
+#   helm install loki grafana/loki-stack \
+#     -f loki-values.yaml \
+#     -n observability --create-namespace
+
+# ==============================================================================
+# Loki Server Configuration
+# ==============================================================================
+
+loki:
+  enabled: true
+
+  # Deployment mode: single binary for simplicity (use microservices for production scale)
+  deploymentMode: SingleBinary
+
+  # Replicas for HA
+  replicas: 2
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  # Persistence for chunks and indexes
+  persistence:
+    enabled: true
+    storageClassName: standard
+    size: 50Gi
+
+  # Loki configuration
+  config:
+    # Authentication
+    auth_enabled: false
+
+    # Server configuration
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+      log_level: info
+
+    # Distributor configuration
+    distributor:
+      ring:
+        kvstore:
+          store: inmemory
+
+    # Ingester configuration
+    ingester:
+      lifecycler:
+        ring:
+          kvstore:
+            store: inmemory
+          replication_factor: 1
+
+      # Chunk configuration
+      chunk_idle_period: 5m
+      chunk_retain_period: 30s
+      max_chunk_age: 1h
+
+      # Flush configuration
+      chunk_encoding: snappy
+      chunk_target_size: 1536000  # 1.5 MB
+
+    # Storage configuration
+    storage_config:
+      # Use filesystem for simplicity (use object storage for production)
+      filesystem:
+        directory: /loki/chunks
+
+      # BoltDB for index (or use boltdb-shipper for distributed)
+      boltdb:
+        directory: /loki/index
+
+    # Schema configuration
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: boltdb
+          object_store: filesystem
+          schema: v11
+          index:
+            prefix: loki_index_
+            period: 24h
+
+    # Limits configuration
+    limits_config:
+      # Ingestion rate limits
+      ingestion_rate_mb: 10
+      ingestion_burst_size_mb: 20
+
+      # Query limits
+      max_query_length: 721h  # 30 days
+      max_query_parallelism: 32
+      max_streams_per_user: 10000
+      max_global_streams_per_user: 50000
+
+      # Retention (handled by compactor)
+      retention_period: 30d
+
+      # Chunk limits
+      max_chunks_per_query: 2000000
+      max_query_series: 500
+
+      # Label limits
+      max_label_name_length: 1024
+      max_label_value_length: 2048
+      max_label_names_per_series: 30
+
+      # Per-stream rate limits
+      per_stream_rate_limit: 3MB
+      per_stream_rate_limit_burst: 15MB
+
+      # Reject old samples (older than 30 days)
+      reject_old_samples: true
+      reject_old_samples_max_age: 720h
+
+    # Compactor (for retention and cleanup)
+    compactor:
+      working_directory: /loki/compactor
+      shared_store: filesystem
+      compaction_interval: 10m
+      retention_enabled: true
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 150
+
+    # Query configuration
+    query_range:
+      # Split queries by interval
+      split_queries_by_interval: 15m
+
+      # Results cache
+      results_cache:
+        cache:
+          enable_fifocache: true
+          fifocache:
+            max_size_bytes: 500MB
+            validity: 24h
+
+      # Parallelization
+      parallelise_shardable_queries: true
+      max_retries: 5
+
+    # Frontend configuration
+    frontend:
+      max_outstanding_per_tenant: 256
+      compress_responses: true
+      log_queries_longer_than: 10s
+
+    # Querier configuration
+    querier:
+      max_concurrent: 20
+
+  # ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    labels:
+      prometheus: monitoring
+
+  # Ingress configuration
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - host: loki.example.com  # Update with your domain
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: loki-tls
+        hosts:
+          - loki.example.com
+
+# ==============================================================================
+# Promtail (Log Shipper)
+# ==============================================================================
+
+promtail:
+  enabled: true
+
+  # Deploy as DaemonSet on all nodes
+  daemonSet:
+    enabled: true
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Promtail configuration
+  config:
+    # Loki server URL
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+        tenant_id: 1
+        backoff_config:
+          min_period: 100ms
+          max_period: 10s
+          max_retries: 10
+        batchsize: 1048576  # 1MB
+        batchwait: 1s
+        timeout: 10s
+
+    # Server configuration
+    server:
+      http_listen_port: 3101
+      grpc_listen_port: 0
+      log_level: info
+
+    # Positions (tracking which logs have been sent)
+    positions:
+      filename: /run/promtail/positions.yaml
+
+    # Scrape configs
+    scrape_configs:
+      # Kubernetes pod logs
+      - job_name: kubernetes-pods
+        pipeline_stages:
+          # Extract log level
+          - regex:
+              expression: '(?P<level>(DEBUG|INFO|WARN|ERROR|FATAL))'
+          - labels:
+              level:
+
+          # Extract trace ID if present
+          - regex:
+              expression: 'trace_id=(?P<trace_id>\w+)'
+          - labels:
+              trace_id:
+
+          # Parse JSON logs
+          - json:
+              expressions:
+                timestamp: time
+                message: msg
+                service: service
+                level: level
+          - labels:
+              service:
+              level:
+
+        kubernetes_sd_configs:
+          - role: pod
+
+        relabel_configs:
+          # Only scrape pods with logs
+          - source_labels: [__meta_kubernetes_pod_controller_name]
+            regex: '([0-9a-z-.]+)'
+            action: keep
+
+          # Add namespace label
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+          # Add pod name label
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+          # Add container name label
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+
+          # Add app label
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+
+          # Add app type label (wxwidgets or polyorb)
+          - source_labels: [__meta_kubernetes_pod_label_app_type]
+            target_label: app_type
+
+          # Add service label
+          - source_labels: [__meta_kubernetes_pod_label_service]
+            target_label: service
+
+          # Set path to container logs
+          - source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+            target_label: __path__
+            separator: /
+            replacement: /var/log/pods/*$1/*.log
+
+      # wxWidgets service logs (specific configuration)
+      - job_name: wxwidgets-services
+        pipeline_stages:
+          # C++ log format parsing
+          - regex:
+              expression: '^\[(?P<timestamp>.*?)\] \[(?P<level>.*?)\] \[(?P<component>.*?)\] (?P<message>.*)'
+          - labels:
+              level:
+              component:
+          - timestamp:
+              source: timestamp
+              format: RFC3339
+
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - default
+                - microservices
+
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_type]
+            regex: wxwidgets
+            action: keep
+
+          - source_labels: [__meta_kubernetes_pod_label_service]
+            target_label: service
+
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+      # PolyORB service logs (specific configuration)
+      - job_name: polyorb-services
+        pipeline_stages:
+          # Ada log format parsing
+          - regex:
+              expression: '(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>.*?)\] (?P<message>.*)'
+          - labels:
+              level:
+          - timestamp:
+              source: timestamp
+              format: '2006-01-02 15:04:05'
+
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - default
+                - microservices
+
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_type]
+            regex: polyorb
+            action: keep
+
+          - source_labels: [__meta_kubernetes_pod_label_service]
+            target_label: service
+
+      # System logs (syslog)
+      - job_name: syslog
+        syslog:
+          listen_address: 0.0.0.0:1514
+          labels:
+            job: syslog
+
+        relabel_configs:
+          - source_labels: [__syslog_message_hostname]
+            target_label: host
+
+  # ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: true
+    labels:
+      prometheus: monitoring
+
+  # Mount host logs
+  extraVolumes:
+    - name: logs
+      hostPath:
+        path: /var/log
+    - name: pods
+      hostPath:
+        path: /var/log/pods
+
+  extraVolumeMounts:
+    - name: logs
+      mountPath: /var/log
+      readOnly: true
+    - name: pods
+      mountPath: /var/log/pods
+      readOnly: true
+
+# ==============================================================================
+# Fluent Bit (Alternative log shipper - disabled by default)
+# ==============================================================================
+
+fluent-bit:
+  enabled: false  # Set to true if you prefer Fluent Bit over Promtail
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  config:
+    outputs: |
+      [OUTPUT]
+          Name loki
+          Match *
+          Url http://loki:3100/loki/api/v1/push
+          Labels job=fluentbit
+          LabelKeys level,app,namespace
+          BatchWait 1s
+          BatchSize 1048576
+          LineFormat json
+          LogLevel info
+
+# ==============================================================================
+# LogQL Alert Rules (integrated with Prometheus AlertManager)
+# ==============================================================================
+
+# Note: LogQL rules are defined in PrometheusRule CRDs
+# See ../alerting-rules/loki-alert-rules.yaml
+
+# ==============================================================================
+# Additional Configuration
+# ==============================================================================
+
+# Global labels
+commonLabels:
+  app.kubernetes.io/part-of: observability
+  prometheus: monitoring
+  project: wxwidgets-polyorb-refactor
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
+# Network policy
+networkPolicy:
+  enabled: false  # Enable if needed
+
+# ==============================================================================
+# Log Retention Strategy
+# ==============================================================================
+#
+# By Service Type:
+# - Critical services (Security, API Gateway): 90 days
+# - Core services (Widget Core, ORB Core): 60 days
+# - Supporting services (Platform Adapters): 30 days
+# - Infrastructure logs: 30 days
+#
+# Implementation: Use Loki's retention period with label matchers
+#
+# ==============================================================================
+
+# ==============================================================================
+# Log Levels
+# ==============================================================================
+#
+# Production log levels by service:
+# - Security Service: DEBUG (high detail for security events)
+# - API Gateway: INFO
+# - Widget Core: INFO
+# - ORB Core: INFO
+# - Platform Adapters: WARN
+# - Supporting services: WARN
+#
+# ==============================================================================
+
+# ==============================================================================
+# Query Performance
+# ==============================================================================
+#
+# Expected query performance:
+# - Simple queries (1 service, 1 hour): < 1s
+# - Complex queries (all services, 24 hours): < 10s
+# - Aggregations (all services, 7 days): < 30s
+#
+# Optimization:
+# - Use label filters to reduce query scope
+# - Limit time range to smallest necessary window
+# - Use | unwrap for metric extraction from logs
+# - Enable query results caching (configured above)
+#
+# ==============================================================================
+
+# ==============================================================================
+# Post-Installation
+# ==============================================================================
+#
+# 1. Verify Loki is running:
+#    kubectl get pods -n observability -l app=loki
+#
+# 2. Verify Promtail is running on all nodes:
+#    kubectl get daemonset -n observability promtail
+#
+# 3. Access Loki (for debugging):
+#    kubectl port-forward -n observability svc/loki 3100:3100
+#
+# 4. Query logs via Grafana:
+#    - Navigate to Grafana → Explore
+#    - Select "Loki" data source
+#    - Use LogQL queries:
+#        {namespace="microservices", service="widget-core"}
+#        {app_type="wxwidgets"} |= "ERROR"
+#        {app_type="polyorb"} | json | level="ERROR"
+#
+# 5. Example LogQL queries:
+#
+#    # All errors from wxWidgets services in last hour
+#    {app_type="wxwidgets"} |= "ERROR" | json | __error__=""
+#
+#    # Request rate by service (requests per second)
+#    sum(rate({namespace="microservices"}[5m])) by (service)
+#
+#    # Top 10 error messages
+#    topk(10, sum by (message) (count_over_time({level="ERROR"}[24h])))
+#
+#    # Trace correlation (find logs for specific trace)
+#    {namespace="microservices"} | json | trace_id="abc123def456"
+#
+#    # P95 latency from logs
+#    quantile_over_time(0.95, {service="api-gateway"}
+#      | json
+#      | unwrap latency_ms [5m])
+#
+# 6. Set up log-based alerts:
+#    kubectl apply -f ../alerting-rules/loki-alert-rules.yaml
+#
+# ==============================================================================

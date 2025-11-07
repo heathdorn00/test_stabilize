@@ -1,0 +1,609 @@
+# Jaeger Helm Values (jaegertracing/jaeger)
+# Task: bd88ec - Deploy observability stack (Prometheus, Grafana, Loki, Jaeger)
+# Chart: jaegertracing/jaeger
+# Version: 3.x+
+#
+# Deploy:
+#   helm repo add jaegertracing https://jaegertracing.github.io/helm-charts
+#   helm repo update
+#   helm install jaeger jaegertracing/jaeger \
+#     -f jaeger-values.yaml \
+#     -n observability --create-namespace
+
+# ==============================================================================
+# Global Settings
+# ==============================================================================
+
+# Deployment strategy: production (all-in-one for dev/staging)
+strategy: production
+
+# Storage backend: Elasticsearch (use Cassandra or Kafka for very high scale)
+storage:
+  type: elasticsearch
+  elasticsearch:
+    host: elasticsearch
+    port: 9200
+    scheme: http
+    # user: elastic  # Uncomment for authenticated access
+    # password: changeme
+    usePassword: false
+
+    # Index configuration
+    indexPrefix: jaeger
+    indexDateSeparator: "-"
+
+    # Shards and replicas
+    numShards: 3
+    numReplicas: 1
+
+    # Retention (managed by ES curator)
+    # Traces older than 7 days will be deleted
+    createIndexTemplates: true
+
+    # ES version
+    version: 8
+
+# ==============================================================================
+# Jaeger Collector
+# ==============================================================================
+
+collector:
+  enabled: true
+
+  # Replicas for HA
+  replicaCount: 2
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  # Auto-scaling
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    # OTLP gRPC port (OpenTelemetry)
+    otlp:
+      grpc:
+        port: 4317
+      http:
+        port: 4318
+    # Jaeger gRPC port
+    grpc:
+      port: 14250
+    # Jaeger Thrift ports
+    http:
+      port: 14268
+    zipkin:
+      port: 9411
+
+  # Collector configuration
+  config:
+    # Sampling strategy
+    sampling:
+      default_strategy:
+        type: probabilistic
+        param: 0.1  # 10% sampling rate (adjust based on volume)
+
+      per_operation_strategies:
+        # Critical operations: 100% sampling
+        - operation: "/api/v1/security/.*"
+          type: probabilistic
+          param: 1.0
+
+        - operation: "/api/v1/auth/.*"
+          type: probabilistic
+          param: 1.0
+
+        # High-value operations: 50% sampling
+        - operation: "/api/v1/widgets/create"
+          type: probabilistic
+          param: 0.5
+
+        - operation: "/api/v1/orb/.*"
+          type: probabilistic
+          param: 0.5
+
+        # Standard operations: 10% sampling
+        - operation: "/api/v1/widgets/.*"
+          type: probabilistic
+          param: 0.1
+
+        # Health checks: 1% sampling
+        - operation: "/health"
+          type: probabilistic
+          param: 0.01
+
+        - operation: "/ready"
+          type: probabilistic
+          param: 0.01
+
+    # Queue configuration
+    queue:
+      num_workers: 50
+      queue_size: 2000
+
+    # Span processor configuration
+    span_processor:
+      workers: 100
+      queue_size: 10000
+
+  # ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: true
+    labels:
+      prometheus: monitoring
+
+  # Ingress (optional)
+  ingress:
+    enabled: false
+
+# ==============================================================================
+# Jaeger Query (UI)
+# ==============================================================================
+
+query:
+  enabled: true
+
+  # Replicas
+  replicaCount: 2
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 16686
+
+  # Ingress configuration
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - jaeger.example.com  # Update with your domain
+    tls:
+      - secretName: jaeger-tls
+        hosts:
+          - jaeger.example.com
+
+  # Query configuration
+  config:
+    # Dependencies refresh rate
+    dependencies:
+      menuEnabled: true
+
+    # UI configuration
+    ui:
+      basePath: /
+      logAccessJaegerDebug: true
+      logAccessJaegerInfo: true
+
+      # Trace quality metrics
+      trackingId: "UA-000000-1"  # Google Analytics (optional)
+
+      # Dependencies visualization
+      dependencies:
+        dagMaxNumServices: 200
+        menuEnabled: true
+
+    # Archive configuration (long-term storage)
+    archive:
+      enabled: false
+
+  # ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: true
+    labels:
+      prometheus: monitoring
+
+# ==============================================================================
+# Jaeger Agent
+# ==============================================================================
+
+agent:
+  enabled: true
+
+  # Deploy as DaemonSet on all nodes
+  daemonset:
+    enabled: true
+
+  # Resource limits (runs on every node)
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Agent configuration
+  config:
+    # Collector endpoint
+    reporter:
+      grpc:
+        host_port: jaeger-collector:14250
+
+    # Sampling configuration (will be overridden by collector)
+    sampler:
+      type: remote
+      param: 0.1
+
+  # ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: true
+    labels:
+      prometheus: monitoring
+
+  # Annotations for pods to use Jaeger agent
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "5778"
+
+# ==============================================================================
+# Jaeger Ingester (for Kafka-based deployments)
+# ==============================================================================
+
+ingester:
+  enabled: false  # Enable if using Kafka
+
+  replicaCount: 1
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  autoscaling:
+    enabled: false
+
+# ==============================================================================
+# Elasticsearch (Storage Backend)
+# ==============================================================================
+
+elasticsearch:
+  enabled: true
+
+  # Elasticsearch version
+  imageTag: "8.12.0"
+
+  # Cluster configuration
+  replicas: 3
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+  # Persistence
+  persistence:
+    enabled: true
+    storageClassName: standard
+    size: 100Gi
+
+  # Elasticsearch configuration
+  esConfig:
+    elasticsearch.yml: |
+      cluster.name: jaeger
+      network.host: 0.0.0.0
+
+      # Index settings
+      indices.memory.index_buffer_size: 30%
+
+      # Security (disable for simplicity, enable in production)
+      xpack.security.enabled: false
+      xpack.monitoring.enabled: true
+
+  # Index lifecycle management
+  # Create curator job to delete old traces
+  curator:
+    enabled: true
+    schedule: "0 1 * * *"  # Daily at 1 AM
+    config:
+      elasticsearch:
+        host: elasticsearch
+        port: 9200
+    actions:
+      1:
+        action: delete_indices
+        description: "Delete traces older than 7 days"
+        options:
+          ignore_empty_list: true
+          disable_action: false
+        filters:
+          - filtertype: pattern
+            kind: prefix
+            value: jaeger-
+          - filtertype: age
+            source: name
+            direction: older
+            timestring: '%Y-%m-%d'
+            unit: days
+            unit_count: 7
+
+# ==============================================================================
+# Service Dependencies
+# ==============================================================================
+
+# Spark job for dependencies (optional, for service dependency graph)
+spark:
+  enabled: false  # Enable if you want dependency graph generation
+
+  schedule: "0 2 * * *"  # Daily at 2 AM
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+# ==============================================================================
+# OpenTelemetry Collector Integration
+# ==============================================================================
+
+# Note: If using OpenTelemetry Collector, configure it to forward to Jaeger:
+#
+# receivers:
+#   otlp:
+#     protocols:
+#       grpc:
+#         endpoint: 0.0.0.0:4317
+#       http:
+#         endpoint: 0.0.0.0:4318
+#
+# exporters:
+#   jaeger:
+#     endpoint: jaeger-collector:14250
+#     tls:
+#       insecure: true
+#
+# service:
+#   pipelines:
+#     traces:
+#       receivers: [otlp]
+#       exporters: [jaeger]
+
+# ==============================================================================
+# Instrumentation Guide
+# ==============================================================================
+#
+# C++ (wxWidgets Services):
+# ------------------------
+# Use OpenTelemetry C++ SDK:
+#
+#   #include <opentelemetry/sdk/trace/tracer_provider.h>
+#   #include <opentelemetry/exporters/jaeger/jaeger_exporter.h>
+#
+#   // Initialize tracer
+#   auto exporter = std::make_unique<JaegerExporter>(
+#       JaegerExporterOptions{
+#           .endpoint = "http://jaeger-collector:14268/api/traces",
+#           .service_name = "widget-core"
+#       }
+#   );
+#
+#   // Create span
+#   auto span = tracer->StartSpan("create_widget");
+#   span->SetAttribute("widget.type", "button");
+#   span->SetAttribute("widget.label", "Submit");
+#   // ... operation ...
+#   span->End();
+#
+# Ada (PolyORB Services):
+# -----------------------
+# Use custom HTTP client to send spans:
+#
+#   with Ada.Strings.Unbounded;
+#   with AWS.Client;
+#   with AWS.Response;
+#
+#   procedure Send_Span (
+#       Span_Name : String;
+#       Trace_ID  : String;
+#       Span_ID   : String;
+#       Duration  : Duration
+#   ) is
+#       URL : constant String :=
+#           "http://jaeger-collector:14268/api/traces";
+#       JSON : constant String := Format_Jaeger_Span(...);
+#   begin
+#       Response := AWS.Client.Post(URL, JSON);
+#   end Send_Span;
+#
+# Python (Integration Tests):
+# ---------------------------
+# Use OpenTelemetry Python:
+#
+#   from opentelemetry import trace
+#   from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+#   from opentelemetry.sdk.trace import TracerProvider
+#   from opentelemetry.sdk.trace.export import BatchSpanProcessor
+#
+#   # Configure tracer
+#   jaeger_exporter = JaegerExporter(
+#       agent_host_name="jaeger-agent",
+#       agent_port=6831,
+#   )
+#
+#   provider = TracerProvider()
+#   processor = BatchSpanProcessor(jaeger_exporter)
+#   provider.add_span_processor(processor)
+#   trace.set_tracer_provider(provider)
+#
+#   # Create trace
+#   tracer = trace.get_tracer(__name__)
+#   with tracer.start_as_current_span("test_operation"):
+#       # test code
+#       pass
+#
+# ==============================================================================
+
+# ==============================================================================
+# Context Propagation (W3C Trace Context)
+# ==============================================================================
+#
+# All services must propagate trace context in HTTP headers:
+#
+# Request headers:
+#   traceparent: 00-<trace-id>-<span-id>-01
+#   tracestate: jaeger=<additional-data>
+#
+# Example (C++):
+#   std::string trace_header =
+#       "00-" + trace_id + "-" + span_id + "-01";
+#   http_request.SetHeader("traceparent", trace_header);
+#
+# Example (Ada):
+#   Set_Header(Request, "traceparent",
+#       "00-" & Trace_ID & "-" & Span_ID & "-01");
+#
+# ==============================================================================
+
+# ==============================================================================
+# Trace Attributes (Recommended)
+# ==============================================================================
+#
+# Standard attributes for all spans:
+# - service.name: Service name (e.g., "widget-core")
+# - service.version: Deployment version
+# - service.instance.id: Pod name
+# - http.method: HTTP method (GET, POST, etc.)
+# - http.url: Request URL
+# - http.status_code: Response status
+# - error: true (if error occurred)
+# - error.message: Error description
+#
+# Custom attributes for business logic:
+# - widget.id: Widget identifier
+# - widget.type: Widget type (button, textbox, etc.)
+# - user.id: User identifier
+# - operation.name: Business operation name
+# - cache.hit: true/false
+# - db.query.duration_ms: Database query duration
+#
+# ==============================================================================
+
+# ==============================================================================
+# Sampling Strategy
+# ==============================================================================
+#
+# Adaptive sampling based on operation criticality:
+#
+# CRITICAL (100% sampling):
+# - Security operations
+# - Authentication/authorization
+# - Payment processing
+# - Data migrations
+#
+# HIGH (50% sampling):
+# - Create/update operations
+# - Complex workflows
+# - Inter-service calls
+#
+# MEDIUM (10% sampling):
+# - Read operations
+# - List/search operations
+# - Standard CRUD
+#
+# LOW (1% sampling):
+# - Health checks
+# - Metrics endpoints
+# - Static content
+#
+# Total expected trace volume:
+# - 100 RPS * 0.1 avg sampling = 10 traces/sec
+# - 10 traces/sec * 86400 sec/day = 864,000 traces/day
+# - Storage: ~2GB/day (with 3-day retention = 6GB active)
+#
+# ==============================================================================
+
+# ==============================================================================
+# Additional Configuration
+# ==============================================================================
+
+# Global labels
+commonLabels:
+  app.kubernetes.io/part-of: observability
+  prometheus: monitoring
+  project: wxwidgets-polyorb-refactor
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+
+# Network policy
+networkPolicy:
+  enabled: false  # Enable if needed
+
+# ==============================================================================
+# Post-Installation
+# ==============================================================================
+#
+# 1. Verify Jaeger is running:
+#    kubectl get pods -n observability -l app.kubernetes.io/instance=jaeger
+#
+# 2. Access Jaeger UI:
+#    kubectl port-forward -n observability svc/jaeger-query 16686:16686
+#    Open: http://localhost:16686
+#
+# 3. Test trace submission:
+#    curl -X POST http://jaeger-collector:14268/api/traces \
+#      -H "Content-Type: application/json" \
+#      -d @test-trace.json
+#
+# 4. Query traces via UI:
+#    - Service: Select service (e.g., "widget-core")
+#    - Operation: Select operation (e.g., "create_widget")
+#    - Tags: Add filters (e.g., error=true)
+#    - Lookback: Set time range
+#
+# 5. Integrate with Grafana:
+#    - Jaeger data source is already configured in Grafana
+#    - Use "Trace ID" from logs to jump to traces
+#    - Enable exemplars in Prometheus to link metrics → traces
+#
+# 6. Configure instrumentation in services:
+#    - Add OpenTelemetry SDK to each service
+#    - Set JAEGER_AGENT_HOST=jaeger-agent
+#    - Set JAEGER_AGENT_PORT=6831
+#    - Set JAEGER_SAMPLER_TYPE=remote
+#    - Set JAEGER_SAMPLER_PARAM=0.1
+#
+# 7. Verify traces are being collected:
+#    # Check collector metrics
+#    kubectl port-forward -n observability svc/jaeger-collector 14269:14269
+#    curl http://localhost:14269/metrics | grep jaeger_collector
+#
+#    # Check Elasticsearch indices
+#    kubectl exec -n observability elasticsearch-0 -- \
+#      curl -X GET "http://localhost:9200/_cat/indices/jaeger*?v"
+#
+# ==============================================================================

@@ -1,0 +1,106 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Stryker Mutation Testing Configuration - Task: 57fbde / RDB-002",
+  "packageManager": "npm",
+  "testRunner": "jest",
+  "coverageAnalysis": "perTest",
+
+  "mutate": [
+    "contracts/consumers/**/*.ts",
+    "!contracts/consumers/**/*.spec.ts",
+    "!contracts/consumers/**/*.test.ts",
+    "!contracts/consumers/**/node_modules/**",
+    "!contracts/consumers/**/dist/**"
+  ],
+
+  "testFramework": "jest",
+  "jest": {
+    "projectType": "custom",
+    "configFile": "contracts/consumers/api_gateway/jest.config.js",
+    "enableFindRelatedTests": true
+  },
+
+  "reporters": [
+    "html",
+    "clear-text",
+    "progress",
+    "dashboard",
+    "json"
+  ],
+
+  "htmlReporter": {
+    "fileName": "reports/mutation/stryker-report.html"
+  },
+
+  "jsonReporter": {
+    "fileName": "reports/mutation/stryker-report.json"
+  },
+
+  "dashboard": {
+    "project": "github.com/your-org/refactor-team",
+    "version": "main",
+    "module": "contract-tests",
+    "reportType": "full"
+  },
+
+  "thresholds": {
+    "high": 80,
+    "low": 60,
+    "break": 50
+  },
+
+  "maxConcurrentTestRunners": 4,
+  "timeoutMS": 60000,
+  "timeoutFactor": 1.5,
+
+  "mutator": {
+    "plugins": [
+      "@stryker-mutator/typescript-checker"
+    ],
+    "excludedMutations": []
+  },
+
+  "checkers": ["typescript"],
+  "tsconfigFile": "contracts/consumers/api_gateway/tsconfig.json",
+
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    "coverage",
+    "reports",
+    "*.spec.ts",
+    "*.test.ts",
+    "pacts"
+  ],
+
+  "plugins": [
+    "@stryker-mutator/jest-runner",
+    "@stryker-mutator/typescript-checker"
+  ],
+
+  "commandRunner": {
+    "command": "npm test"
+  },
+
+  "concurrency": 4,
+  "dryRunTimeoutMinutes": 5,
+
+  "symlinkNodeModules": true,
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true,
+
+  "logLevel": "info",
+  "fileLogLevel": "debug",
+  "allowConsoleColors": true,
+
+  "maxTestRunnerReuse": 10,
+
+  "incremental": true,
+  "incrementalFile": ".stryker-incremental.json",
+
+  "warnings": {
+    "unknownOptions": true,
+    "preprocessorErrors": true,
+    "unloadedPlugins": true
+  }
+}

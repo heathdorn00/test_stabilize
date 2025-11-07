@@ -1,0 +1,569 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "testing-infrastructure-v1",
+    "title": "Testing Infrastructure Metrics - RDB-002",
+    "tags": ["testing", "quality", "security", "rdb-002"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "30s",
+    "time": {
+      "from": "now-4w",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["10s", "30s", "1m", "5m", "15m"],
+      "time_options": ["24h", "7d", "4w", "12w", "24w"]
+    },
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 1,
+    "links": [
+      {
+        "title": "RDB-002 Document",
+        "url": "https://github.com/refactorteam/docs/blob/main/RDB-002-Testing-Infrastructure-Modernization.md",
+        "type": "link",
+        "icon": "doc"
+      },
+      {
+        "title": "Week 1 Execution Plan",
+        "url": "https://github.com/refactorteam/docs/blob/main/WEEK-1-EXECUTION-PLAN.md",
+        "type": "link",
+        "icon": "bolt"
+      }
+    ],
+    "panels": [
+      {
+        "id": 1,
+        "gridPos": {"h": 4, "w": 3, "x": 0, "y": 0},
+        "type": "stat",
+        "title": "Overall Coverage",
+        "description": "Average test coverage across all services (Target: 80%+)",
+        "targets": [
+          {
+            "expr": "avg(test_coverage_percent{type=\"line\"})",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 60, "color": "yellow"},
+                {"value": 80, "color": "green"}
+              ]
+            },
+            "mappings": []
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "background",
+          "justifyMode": "auto",
+          "textMode": "value_and_name",
+          "orientation": "auto",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"],
+            "fields": ""
+          }
+        }
+      },
+      {
+        "id": 2,
+        "gridPos": {"h": 4, "w": 3, "x": 3, "y": 0},
+        "type": "stat",
+        "title": "Mutation Score",
+        "description": "Average mutation score (Target: 80%+, Minimum: 75%)",
+        "targets": [
+          {
+            "expr": "avg(test_mutation_score)",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 70, "color": "yellow"},
+                {"value": 80, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "background",
+          "textMode": "value_and_name",
+          "reduceOptions": {"calcs": ["lastNotNull"]}
+        }
+      },
+      {
+        "id": 3,
+        "gridPos": {"h": 4, "w": 3, "x": 6, "y": 0},
+        "type": "stat",
+        "title": "Flaky Test Rate",
+        "description": "Percentage of flaky tests (Target: <1%)",
+        "targets": [
+          {
+            "expr": "avg(test_flaky_rate) * 100",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "green"},
+                {"value": 1, "color": "yellow"},
+                {"value": 3, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "background",
+          "textMode": "value_and_name",
+          "reduceOptions": {"calcs": ["lastNotNull"]}
+        }
+      },
+      {
+        "id": 4,
+        "gridPos": {"h": 4, "w": 3, "x": 9, "y": 0},
+        "type": "stat",
+        "title": "Test Suite Duration",
+        "description": "Average full test suite execution time (Target: <5min)",
+        "targets": [
+          {
+            "expr": "sum(rate(test_suite_duration_seconds_sum[5m])) / sum(rate(test_suite_duration_seconds_count[5m]))",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "green"},
+                {"value": 300, "color": "yellow"},
+                {"value": 600, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "background",
+          "textMode": "value_and_name",
+          "reduceOptions": {"calcs": ["lastNotNull"]}
+        }
+      },
+      {
+        "id": 5,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+        "type": "timeseries",
+        "title": "Test Coverage Trend by Service",
+        "description": "Line coverage percentage over time (Baseline: 42%, Target: 80%+)",
+        "targets": [
+          {
+            "expr": "test_coverage_percent{type=\"line\", service=~\"$service\"}",
+            "refId": "A",
+            "legendFormat": "{{service}}",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "custom": {
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "auto",
+              "pointSize": 5,
+              "spanNulls": false,
+              "lineInterpolation": "smooth",
+              "stacking": {"mode": "none"},
+              "axisPlacement": "auto",
+              "drawStyle": "line"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 42, "color": "transparent"},
+                {"value": 60, "color": "transparent"},
+                {"value": 80, "color": "transparent"}
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "tooltip": {"mode": "multi", "sort": "desc"},
+          "legend": {
+            "calcs": ["lastNotNull", "mean"],
+            "displayMode": "table",
+            "placement": "bottom",
+            "showLegend": true
+          }
+        }
+      },
+      {
+        "id": 6,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+        "type": "timeseries",
+        "title": "Mutation Score Trend by Service",
+        "description": "Mutation testing score over time (Target: ≥80% new code, ≥75% legacy)",
+        "targets": [
+          {
+            "expr": "test_mutation_score{service=~\"$service\"}",
+            "refId": "A",
+            "legendFormat": "{{service}}",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "custom": {
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "auto",
+              "drawStyle": "line"
+            }
+          }
+        },
+        "options": {
+          "tooltip": {"mode": "multi"},
+          "legend": {"displayMode": "table", "placement": "bottom"}
+        }
+      },
+      {
+        "id": 7,
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 20},
+        "type": "timeseries",
+        "title": "CI Pipeline Stage Duration",
+        "description": "Duration of each pipeline stage (Target: Fast-Fail <2min, Full Suite <5min)",
+        "targets": [
+          {
+            "expr": "avg(ci_pipeline_duration_seconds{stage=\"fast-fail\"})",
+            "refId": "A",
+            "legendFormat": "Fast-Fail Gate",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          },
+          {
+            "expr": "avg(ci_pipeline_duration_seconds{stage=\"full-suite\"})",
+            "refId": "B",
+            "legendFormat": "Full Test Suite",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          },
+          {
+            "expr": "avg(ci_pipeline_duration_seconds{stage=\"mutation\"})",
+            "refId": "C",
+            "legendFormat": "Mutation Testing",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          },
+          {
+            "expr": "avg(ci_pipeline_duration_seconds{stage=\"performance\"})",
+            "refId": "D",
+            "legendFormat": "Performance Testing",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "stacking": {"mode": "normal"},
+              "fillOpacity": 50
+            }
+          }
+        },
+        "options": {
+          "tooltip": {"mode": "multi"},
+          "legend": {"displayMode": "list", "placement": "bottom"}
+        }
+      },
+      {
+        "id": 8,
+        "gridPos": {"h": 8, "w": 4, "x": 8, "y": 20},
+        "type": "stat",
+        "title": "Fast-Fail Catch Rate",
+        "description": "% of failures caught in Stage 1 (<2min) vs later stages",
+        "targets": [
+          {
+            "expr": "sum(rate(ci_pipeline_runs{stage=\"fast-fail\", status=\"failed\"}[1h])) / sum(rate(ci_pipeline_runs{stage=\"fast-fail\"}[1h])) * 100",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 70, "color": "yellow"},
+                {"value": 80, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "background",
+          "textMode": "value_and_name",
+          "reduceOptions": {"calcs": ["lastNotNull"]}
+        }
+      },
+      {
+        "id": 9,
+        "gridPos": {"h": 6, "w": 3, "x": 0, "y": 28},
+        "type": "gauge",
+        "title": "Secret Scan Status",
+        "description": "BLOCKING: Must be 100% (zero violations)",
+        "targets": [
+          {
+            "expr": "(sum(secret_scan_violations{severity=\"high\"}) == bool 0) * 100",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 100, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true,
+          "text": {}
+        }
+      },
+      {
+        "id": 10,
+        "gridPos": {"h": 6, "w": 3, "x": 3, "y": 28},
+        "type": "gauge",
+        "title": "CVE Compliance",
+        "description": "0 CRITICAL, ≤3 HIGH per service",
+        "targets": [
+          {
+            "expr": "(sum(cve_count{severity=\"critical\"}) == bool 0) * (sum(cve_count{severity=\"high\"}) <= bool 3) * 100",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 100, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true
+        }
+      },
+      {
+        "id": 11,
+        "gridPos": {"h": 6, "w": 3, "x": 6, "y": 28},
+        "type": "gauge",
+        "title": "Synthetic Test Data",
+        "description": "BLOCKING: Must be 100% (no production data)",
+        "targets": [
+          {
+            "expr": "test_data_synthetic_percent",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 100, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true
+        }
+      },
+      {
+        "id": 12,
+        "gridPos": {"h": 6, "w": 3, "x": 9, "y": 28},
+        "type": "gauge",
+        "title": "Pact Contract Coverage",
+        "description": "% of 256 service connections with contracts",
+        "targets": [
+          {
+            "expr": "contract_coverage_percent",
+            "refId": "A",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 50, "color": "yellow"},
+                {"value": 90, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true
+        }
+      },
+      {
+        "id": 13,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 34},
+        "type": "timeseries",
+        "title": "Flaky Test Rate Trend",
+        "description": "Flaky test percentage over time (Week 24 Target: <1%, Week 32 Target: <0.5%)",
+        "targets": [
+          {
+            "expr": "test_flaky_rate{service=~\"$service\"} * 100",
+            "refId": "A",
+            "legendFormat": "{{service}}",
+            "datasource": {"type": "prometheus", "uid": "prometheus-testing"}
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "custom": {
+              "lineWidth": 2,
+              "fillOpacity": 10
+            }
+          }
+        },
+        "options": {
+          "tooltip": {"mode": "multi"},
+          "legend": {"displayMode": "table", "placement": "bottom"}
+        }
+      }
+    ],
+    "templating": {
+      "list": [
+        {
+          "name": "service",
+          "type": "query",
+          "label": "Service",
+          "description": "Filter by service name",
+          "query": "label_values(test_coverage_percent, service)",
+          "datasource": {"type": "prometheus", "uid": "prometheus-testing"},
+          "multi": true,
+          "includeAll": true,
+          "allValue": ".*",
+          "current": {"selected": false, "text": "All", "value": "$__all"},
+          "refresh": 1,
+          "regex": "",
+          "sort": 1
+        },
+        {
+          "name": "coverage_type",
+          "type": "custom",
+          "label": "Coverage Type",
+          "description": "Type of coverage to display",
+          "query": "line,branch,function",
+          "multi": false,
+          "includeAll": false,
+          "current": {"selected": false, "text": "line", "value": "line"}
+        },
+        {
+          "name": "env",
+          "type": "query",
+          "label": "Environment",
+          "description": "Filter by environment",
+          "query": "label_values(test_coverage_percent, env)",
+          "datasource": {"type": "prometheus", "uid": "prometheus-testing"},
+          "multi": false,
+          "includeAll": false,
+          "current": {"selected": false, "text": "ci", "value": "ci"},
+          "refresh": 1
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "name": "Deployments",
+          "datasource": {"type": "prometheus", "uid": "prometheus-testing"},
+          "expr": "deployment_timestamp",
+          "tagKeys": "service,version",
+          "textFormat": "{{service}} deployed: {{version}}",
+          "iconColor": "blue",
+          "enable": true
+        },
+        {
+          "name": "Week Milestones",
+          "datasource": {"type": "-- Grafana --"},
+          "enable": true,
+          "iconColor": "green",
+          "tags": ["milestone"]
+        }
+      ]
+    }
+  },
+  "overwrite": true,
+  "folderId": 0,
+  "folderUid": "",
+  "message": "RDB-002 Testing Infrastructure Dashboard v1.0 - Initial release"
+}

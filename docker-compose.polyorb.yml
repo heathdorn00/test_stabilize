@@ -1,0 +1,124 @@
+# PolyORB Testing Environment - Docker Compose
+# Task: 81500c - Set Up Docker/Linux Test Environment
+# Owner: @test_stabilize
+# Purpose: Orchestrate PolyORB build and testing with dependencies
+
+version: '3.8'
+
+services:
+  # Main PolyORB build and test service
+  polyorb-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.polyorb
+      args:
+        GNAT_VERSION: "13"
+    image: polyorb-test:latest
+    container_name: polyorb-test-env
+    volumes:
+      # Mount current directory (should be PolyORB repo root)
+      - .:/workspace
+      # Persist build artifacts for faster rebuilds
+      - polyorb-obj:/workspace/obj
+      - polyorb-lib:/workspace/lib
+      - polyorb-bin:/workspace/bin
+      # Persist GPR build cache
+      - gprbuild-cache:/root/.gprbuild
+    environment:
+      - BUILD_MODE=release
+      - COVERAGE_TARGET=80
+      - GNAT_VERSION=13
+    working_dir: /workspace
+    # Keep container running for interactive use
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+  # PostgreSQL for integration testing
+  postgres-test:
+    image: postgres:15-alpine
+    container_name: polyorb-postgres
+    environment:
+      POSTGRES_USER: polyorb_test
+      POSTGRES_PASSWORD: polyorb_test_password
+      POSTGRES_DB: polyorb_test_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polyorb_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Integration test runner (depends on polyorb-test and postgres)
+  integration-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.polyorb
+    image: polyorb-test:latest
+    container_name: polyorb-integration-tests
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    volumes:
+      - .:/workspace
+    environment:
+      - BUILD_MODE=release
+      - POSTGRES_HOST=postgres-test
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=polyorb_test
+      - POSTGRES_PASSWORD=polyorb_test_password
+      - POSTGRES_DB=polyorb_test_db
+    working_dir: /workspace
+    command: |
+      bash -c "
+        echo 'Running integration tests...'
+        # Wait for build to complete (in case it's running)
+        sleep 5
+        # Run integration test suite
+        if [ -f tests/integration/run_integration_tests.sh ]; then
+          ./tests/integration/run_integration_tests.sh
+        else
+          echo 'Integration test script not found - skipping'
+        fi
+      "
+
+volumes:
+  polyorb-obj:
+    name: polyorb-obj-cache
+  polyorb-lib:
+    name: polyorb-lib-cache
+  polyorb-bin:
+    name: polyorb-bin-cache
+  gprbuild-cache:
+    name: gprbuild-cache
+  postgres-data:
+    name: polyorb-postgres-data
+
+# Usage Instructions:
+#
+# 1. Build the Docker image:
+#    docker-compose -f docker-compose.polyorb.yml build
+#
+# 2. Start interactive development environment:
+#    docker-compose -f docker-compose.polyorb.yml up -d polyorb-test
+#    docker-compose -f docker-compose.polyorb.yml exec polyorb-test bash
+#
+# 3. Run full build:
+#    docker-compose -f docker-compose.polyorb.yml run --rm polyorb-test \
+#      bash -c "./support/reconfig && ./configure && gprbuild -P polyorb.gpr"
+#
+# 4. Run integration tests (with PostgreSQL):
+#    docker-compose -f docker-compose.polyorb.yml up integration-tests
+#
+# 5. Run with coverage:
+#    docker-compose -f docker-compose.polyorb.yml run --rm polyorb-test \
+#      bash -c "gprbuild -P polyorb.gpr -cargs -fprofile-arcs -ftest-coverage && \
+#               ./run_tests.sh && \
+#               lcov --capture --directory . --output-file coverage.info"
+#
+# 6. Clean up:
+#    docker-compose -f docker-compose.polyorb.yml down
+#    docker-compose -f docker-compose.polyorb.yml down -v  # Also remove volumes

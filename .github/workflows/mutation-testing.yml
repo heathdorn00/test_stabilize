@@ -1,0 +1,326 @@
+name: Mutation Testing
+
+# Task: 57fbde - Comprehensive Test Framework / RDB-002
+# Purpose: Validate test quality through mutation analysis
+# Tools: Stryker (TS), Mull (C++), mutmut (Python)
+# Schedule: Weekly on Sunday night (reduces noise, cost-effective)
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Every Sunday at 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      tools:
+        description: 'Mutation testing tools to run (stryker,mull,mutmut)'
+        required: false
+        default: 'stryker,mull,mutmut'
+      threshold:
+        description: 'Minimum mutation score threshold (%)'
+        required: false
+        default: '70'
+
+env:
+  MUTATION_SCORE_THRESHOLD: ${{ github.event.inputs.threshold || '70' }}
+
+jobs:
+  # ===========================================================================
+  # Stryker (TypeScript - Contract Tests)
+  # ===========================================================================
+  stryker-mutation-testing:
+    name: Stryker (TypeScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: contains(github.event.inputs.tools, 'stryker') || github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: tests/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd tests
+          npm ci
+
+      - name: Run Stryker mutation testing
+        run: |
+          cd tests
+          npx stryker run --reporters html,json,clear-text,dashboard
+
+      - name: Check mutation score
+        run: |
+          cd tests
+          SCORE=$(jq '.mutationScore' reports/mutation/stryker-report.json)
+          echo "Mutation score: ${SCORE}%"
+          if (( $(echo "$SCORE < ${MUTATION_SCORE_THRESHOLD}" | bc -l) )); then
+            echo "::warning::Mutation score ${SCORE}% below threshold ${MUTATION_SCORE_THRESHOLD}%"
+            exit 1
+          fi
+
+      - name: Upload Stryker report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: stryker-mutation-report
+          path: |
+            tests/reports/mutation/stryker-report.html
+            tests/reports/mutation/stryker-report.json
+
+      - name: Comment PR with Stryker results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('tests/reports/mutation/stryker-report.json', 'utf8'));
+
+            const body = `## Stryker Mutation Testing Results\n\n` +
+              `Mutation Score: **${report.mutationScore.toFixed(1)}%**\n\n` +
+              `| Metric | Value |\n` +
+              `|--------|-------|\n` +
+              `| Total Mutations | ${report.totalMutants} |\n` +
+              `| Killed | ${report.killed} |\n` +
+              `| Survived | ${report.survived} |\n` +
+              `| Timeout | ${report.timeout} |\n` +
+              `| No Coverage | ${report.noCoverage} |\n\n` +
+              `Threshold: ${process.env.MUTATION_SCORE_THRESHOLD}%\n\n` +
+              (report.mutationScore >= parseFloat(process.env.MUTATION_SCORE_THRESHOLD) ? '✅ Passed' : '❌ Failed');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # ===========================================================================
+  # Mull (C++ - Component/Unit Tests)
+  # ===========================================================================
+  mull-mutation-testing:
+    name: Mull (C++)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: contains(github.event.inputs.tools, 'mull') || github.event_name == 'schedule'
+
+    strategy:
+      matrix:
+        service: [widget-core, platform-adapter, ui-renderer]
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Mull
+        run: |
+          wget https://github.com/mull-project/mull/releases/download/v0.18.3/mull-0.18.3-ubuntu-20.04.deb
+          sudo dpkg -i mull-0.18.3-ubuntu-20.04.deb
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libwxgtk3.2-dev \
+            libgtest-dev
+
+      - name: Build tests
+        run: |
+          cd services/wxwidgets/${{ matrix.service }}
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+          cmake --build build --target all
+
+      - name: Run Mull mutation testing
+        run: |
+          cd tests
+          mull-cxx-17 --config mull.yml --reporters json,html
+
+      - name: Check mutation score
+        run: |
+          cd tests
+          SCORE=$(jq '.mutation_score' reports/mutation/cpp/mull-report.json)
+          echo "Mutation score for ${{ matrix.service }}: ${SCORE}%"
+          if (( $(echo "$SCORE < ${MUTATION_SCORE_THRESHOLD}" | bc -l) )); then
+            echo "::warning::Mutation score ${SCORE}% below threshold ${MUTATION_SCORE_THRESHOLD}%"
+            # Don't fail for C++ (work in progress)
+          fi
+
+      - name: Upload Mull report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: mull-mutation-report-${{ matrix.service }}
+          path: |
+            tests/reports/mutation/cpp/mull-report.html
+            tests/reports/mutation/cpp/mull-report.json
+
+  # ===========================================================================
+  # mutmut (Python - Integration Tests)
+  # ===========================================================================
+  mutmut-mutation-testing:
+    name: mutmut (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: contains(github.event.inputs.tools, 'mutmut') || github.event_name == 'schedule'
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: microservices_test
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          cd tests/integration
+          pip install -r requirements.txt
+          pip install mutmut
+
+      - name: Start services
+        run: |
+          docker-compose -f docker-compose.integration.yml up -d
+          sleep 30
+
+      - name: Run mutmut mutation testing
+        run: |
+          cd tests
+          CI=true mutmut run --parallel 4
+
+      - name: Generate mutmut HTML report
+        if: always()
+        run: |
+          cd tests
+          mutmut html || true
+
+      - name: Check mutation score
+        run: |
+          cd tests
+          mutmut results > mutation-results.txt
+          cat mutation-results.txt
+
+          # Extract mutation score
+          KILLED=$(grep -oP 'Killed: \K\d+' mutation-results.txt || echo "0")
+          SURVIVED=$(grep -oP 'Survived: \K\d+' mutation-results.txt || echo "0")
+          TOTAL=$((KILLED + SURVIVED))
+
+          if [ $TOTAL -eq 0 ]; then
+            echo "No mutations found"
+            exit 0
+          fi
+
+          SCORE=$(echo "scale=2; ($KILLED * 100) / $TOTAL" | bc)
+          echo "Mutation score: ${SCORE}%"
+
+          if (( $(echo "$SCORE < ${MUTATION_SCORE_THRESHOLD}" | bc -l) )); then
+            echo "::warning::Mutation score ${SCORE}% below threshold ${MUTATION_SCORE_THRESHOLD}%"
+            # Don't fail for Python (work in progress)
+          fi
+
+      - name: Upload mutmut report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: mutmut-mutation-report
+          path: |
+            tests/html/
+            tests/mutation-results.txt
+
+      - name: Stop services
+        if: always()
+        run: docker-compose -f docker-compose.integration.yml down
+
+  # ===========================================================================
+  # Mutation Testing Summary
+  # ===========================================================================
+  mutation-testing-summary:
+    name: Mutation Testing Summary
+    runs-on: ubuntu-latest
+    needs: [stryker-mutation-testing, mull-mutation-testing, mutmut-mutation-testing]
+    if: always()
+
+    steps:
+      - name: Download all reports
+        uses: actions/download-artifact@v3
+        with:
+          path: reports/
+
+      - name: Generate summary
+        run: |
+          echo "# Mutation Testing Summary" > summary.md
+          echo "" >> summary.md
+
+          # Stryker summary
+          if [ -f "reports/stryker-mutation-report/stryker-report.json" ]; then
+            SCORE=$(jq '.mutationScore' reports/stryker-mutation-report/stryker-report.json)
+            echo "## Stryker (TypeScript)" >> summary.md
+            echo "Mutation Score: **${SCORE}%**" >> summary.md
+            echo "" >> summary.md
+          fi
+
+          # Mull summary
+          echo "## Mull (C++)" >> summary.md
+          for report in reports/mull-mutation-report-*/mull-report.json; do
+            if [ -f "$report" ]; then
+              SERVICE=$(basename $(dirname "$report") | sed 's/mull-mutation-report-//')
+              SCORE=$(jq '.mutation_score' "$report")
+              echo "- ${SERVICE}: **${SCORE}%**" >> summary.md
+            fi
+          done
+          echo "" >> summary.md
+
+          # mutmut summary
+          if [ -f "reports/mutmut-mutation-report/mutation-results.txt" ]; then
+            echo "## mutmut (Python)" >> summary.md
+            cat reports/mutmut-mutation-report/mutation-results.txt >> summary.md
+            echo "" >> summary.md
+          fi
+
+          cat summary.md
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: mutation-testing-summary
+          path: summary.md
+
+      - name: Create issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Mutation Testing Failed',
+              body: `Mutation testing failed in scheduled run.\n\n` +
+                    `Workflow: ${context.workflow}\n` +
+                    `Run: ${context.runNumber}\n\n` +
+                    `Please review the mutation testing reports and improve test quality.\n\n` +
+                    `[View Workflow Run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              labels: ['testing', 'quality', 'mutation-testing']
+            });
