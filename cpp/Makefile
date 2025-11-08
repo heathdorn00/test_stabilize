@@ -2,8 +2,9 @@
 # RDB-002 Week 1 Implementation
 
 CXX = clang++
-CXXFLAGS = -std=c++17 -Wall -Wextra -I./src
-TEST_FLAGS = -lgtest -lgtest_main -pthread
+GTEST_PREFIX = $(shell brew --prefix googletest 2>/dev/null || echo "/usr/local")
+CXXFLAGS = -std=c++17 -Wall -Wextra -I./src -I$(GTEST_PREFIX)/include
+TEST_FLAGS = -L$(GTEST_PREFIX)/lib -lgtest -lgtest_main -pthread
 
 # Directories
 SRC_DIR = src

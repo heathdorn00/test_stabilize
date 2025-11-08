@@ -38,6 +38,7 @@
     "coverageDirectory": "coverage",
     "coverageReporters": ["text", "lcov", "html"],
     "testMatch": ["**/__tests__/**/*.test.ts", "**/*.test.ts"],
+    "testPathIgnorePatterns": ["/node_modules/", "/examples/"],
     "coverageThreshold": {
       "global": {
         "branches": 60,
