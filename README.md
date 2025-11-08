@@ -7,6 +7,21 @@
 
 ---
 
+## 🗺️ Project Roadmaps
+
+**NEW**: Complete roadmaps for both testing infrastructure and refactoring projects:
+
+📋 **[Full Shared Roadmap](./SHARED-REFACTORING-ROADMAP.md)** - Complete 50+ page roadmap with all tasks, dependencies, and timelines
+📄 **[Executive Summary](./ROADMAP-EXECUTIVE-SUMMARY.md)** - One-page overview with key metrics and next 2 weeks
+📊 **[Visual Timeline](./ROADMAP-TIMELINE.md)** - Gantt charts and progress tracking
+
+**Quick Status**:
+- RDB-002 (Testing): Week 1/24 complete ✅, Week 2 starting
+- RDB-004 (Refactoring): 2/8 tasks complete ✅, Integration phase next
+- Timeline: Nov 2025 - May 2026 (6 months parallel work)
+
+---
+
 ## Overview
 
 Complete testing infrastructure for RDB-002 (Testing Infrastructure Modernization) demonstrating:
