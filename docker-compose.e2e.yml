@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # PolyORB ORB Core Service
+  orb-core:
+    image: polyorb/orb-core:latest
+    container_name: e2e_orb_core
+    ports:
+      - "2809:2809"  # GIOP port
+    environment:
+      POLYORB_ORB_LISTEN_PORT: "2809"
+      POLYORB_GIOP_VERSION: "1.2"
+      POLYORB_LOG_LEVEL: "info"
+      POLYORB_TEST_MODE: "true"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "netstat -an | grep 2809 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - e2e-network
+
+  # XML-RPC Service (for Phase 2 testing)
+  xrc-service:
+    image: polyorb/xrc-service:latest
+    container_name: e2e_xrc_service
+    ports:
+      - "8080:8080"  # XML-RPC port
+    environment:
+      XRC_ORB_IOR: "corbaname::orb-core:2809"
+      XRC_BIND_PORT: "8080"
+      XRC_LOG_LEVEL: "info"
+    depends_on:
+      orb-core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - e2e-network
+    profiles:
+      - phase2  # Only start in Phase 2 tests
+
+  # Prometheus for metrics collection (Phase 1)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: e2e_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.e2e.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - e2e-network
+    profiles:
+      - monitoring  # Optional, for metrics collection
+
+networks:
+  e2e-network:
+    driver: bridge
+    name: e2e_test_network
