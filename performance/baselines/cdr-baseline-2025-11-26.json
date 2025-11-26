@@ -1,0 +1,116 @@
+{
+  "baseline_id": "cdr-baseline-2025-11-26",
+  "task_id": "df3145",
+  "date": "2025-11-26T00:00:00Z",
+  "test_runner": "polyorb_tests/bin/test_runner",
+  "environment": {
+    "platform": "darwin",
+    "os_version": "Darwin 24.6.0",
+    "architecture": "arm64"
+  },
+  "results": {
+    "primitive_type_baseline": {
+      "iterations": 100,
+      "average_ns": 40,
+      "p50_ns": 0,
+      "p95_ns": 0,
+      "p99_ns": 1000,
+      "unit": "nanoseconds"
+    },
+    "complex_type_baseline": {
+      "iterations": 100,
+      "average_ns": 38480,
+      "p50_ns": 21000,
+      "p95_ns": 119000,
+      "p99_ns": 191000,
+      "unit": "nanoseconds"
+    },
+    "hot_path_distribution": {
+      "primitive_count": 80,
+      "complex_count": 20,
+      "primitive_percentage": 80.0,
+      "expected_percentage": 80.0,
+      "status": "PASS"
+    }
+  },
+  "test_summary": {
+    "total_tests": 222,
+    "successful_tests": 221,
+    "failed_assertions": 0,
+    "unexpected_errors": 1
+  },
+  "cdr_roundtrip_tests": {
+    "primitive_types": {
+      "Tk_Null": "PASS",
+      "Tk_Void": "PASS",
+      "Tk_Short": "PASS",
+      "Tk_Long": "PASS",
+      "Tk_Ushort": "PASS",
+      "Tk_Ulong": "PASS",
+      "Tk_Float": "PASS",
+      "Tk_Double": "PASS",
+      "Tk_Boolean": "PASS",
+      "Tk_Char": "PASS",
+      "Tk_Octet": "PASS",
+      "Tk_Any": "PASS",
+      "Tk_TypeCode": "PASS",
+      "Tk_Principal": "PASS",
+      "Tk_Objref": "PASS"
+    },
+    "aggregate_types": {
+      "Tk_Struct": "PASS",
+      "Tk_Union": "PASS",
+      "Tk_Enum": "PASS",
+      "Tk_Sequence": "PASS",
+      "Tk_Array": "PASS",
+      "Tk_Except": "PASS",
+      "Tk_Fixed": "PASS",
+      "Tk_Value": "PASS",
+      "Tk_Valuebox": "PASS"
+    },
+    "extended_types": {
+      "Tk_String": "PASS",
+      "Tk_Alias": "PASS",
+      "Tk_Longlong": "PASS",
+      "Tk_Ulonglong": "PASS",
+      "Tk_Longdouble": "PASS",
+      "Tk_Widechar": "PASS",
+      "Tk_Wstring": "PASS",
+      "Tk_Native": "PASS",
+      "Tk_Abstract_Interface": "PASS",
+      "Tk_Local_Interface": "PASS",
+      "Tk_Component": "PASS",
+      "Tk_Home": "PASS",
+      "Tk_Event": "PASS"
+    },
+    "edge_cases": {
+      "Integer_Boundaries": "PASS",
+      "Empty_Collections": "PASS",
+      "Nested_Structures": "PASS",
+      "Alignment_Padding": "PASS"
+    }
+  },
+  "known_issues": [
+    {
+      "test": "Test_Request_Header_Marshalling",
+      "status": "ERROR",
+      "exception": "CONSTRAINT_ERROR",
+      "message": "length check failed",
+      "file": "cdr_regression_tests.adb:139",
+      "priority": "medium",
+      "notes": "CDR regression test - needs investigation for header marshalling"
+    }
+  ],
+  "performance_thresholds": {
+    "primitive_p99_max_ns": 10000,
+    "complex_p99_max_ns": 500000,
+    "primitive_avg_max_ns": 1000,
+    "complex_avg_max_ns": 100000
+  },
+  "threshold_status": {
+    "primitive_p99": "PASS",
+    "complex_p99": "PASS",
+    "primitive_avg": "PASS",
+    "complex_avg": "PASS"
+  }
+}
