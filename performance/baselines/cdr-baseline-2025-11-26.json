@@ -35,9 +35,9 @@
   },
   "test_summary": {
     "total_tests": 222,
-    "successful_tests": 221,
+    "successful_tests": 222,
     "failed_assertions": 0,
-    "unexpected_errors": 1
+    "unexpected_errors": 0
   },
   "cdr_roundtrip_tests": {
     "primitive_types": {
@@ -90,15 +90,17 @@
       "Alignment_Padding": "PASS"
     }
   },
-  "known_issues": [
+  "known_issues": [],
+  "resolved_issues": [
     {
       "test": "Test_Request_Header_Marshalling",
-      "status": "ERROR",
+      "status": "FIXED",
       "exception": "CONSTRAINT_ERROR",
       "message": "length check failed",
       "file": "cdr_regression_tests.adb:139",
-      "priority": "medium",
-      "notes": "CDR regression test - needs investigation for header marshalling"
+      "fix_commit": "b730ae6",
+      "fix_description": "Moved Bytes declaration into declare block after buffer has content",
+      "resolved_date": "2025-11-26"
     }
   ],
   "performance_thresholds": {
