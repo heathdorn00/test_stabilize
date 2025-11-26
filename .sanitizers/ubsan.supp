@@ -1,0 +1,103 @@
+# UndefinedBehaviorSanitizer Suppression File
+# Task 7de375: Integrate ASan and UBSan into CI
+#
+# Purpose: Suppress known false positives and intentional UB
+# Usage: export UBSAN_OPTIONS="suppressions=.sanitizers/ubsan.supp"
+#
+# Documentation: https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html
+#
+# @owner @test_stabilize
+# @date 2025-11-26
+
+# ============================================================================
+# Suppression Format
+# ============================================================================
+# <check_type>:<file_or_function_pattern>
+#
+# Check types:
+#   signed-integer-overflow   - Signed integer overflow
+#   unsigned-integer-overflow - Unsigned integer overflow (if enabled)
+#   shift                     - Invalid bit shift
+#   alignment                 - Misaligned access
+#   null                      - Null pointer dereference
+#   bool                      - Invalid bool value
+#   enum                      - Invalid enum value
+#   vptr                      - Virtual pointer issues
+#   function                  - Invalid function pointer call
+#   float-divide-by-zero      - Float division by zero
+#   float-cast-overflow       - Float to int overflow
+#   implicit-conversion       - Implicit conversion issues
+#   nonnull-attribute         - Null passed to nonnull parameter
+#   returns-nonnull-attribute - Nonnull function returns null
+
+# ============================================================================
+# GoogleTest Framework
+# ============================================================================
+# GoogleTest internal testing utilities
+vptr:testing/*
+function:testing::internal::*
+
+# ============================================================================
+# gRPC Library
+# ============================================================================
+# gRPC uses some platform-specific code with intentional UB patterns
+signed-integer-overflow:grpc/*
+alignment:grpc/*
+
+# ============================================================================
+# Boost Libraries
+# ============================================================================
+# Boost.Preprocessor and template metaprogramming
+signed-integer-overflow:boost/*
+
+# Boost.Asio networking code
+alignment:boost/asio/*
+
+# ============================================================================
+# Protocol Buffers
+# ============================================================================
+# Protobuf wire format parsing
+signed-integer-overflow:google/protobuf/*
+alignment:google/protobuf/*
+
+# ============================================================================
+# System Headers
+# ============================================================================
+# System headers may contain platform-specific code
+alignment:/usr/include/*
+signed-integer-overflow:/usr/include/*
+
+# ============================================================================
+# C++ Standard Library
+# ============================================================================
+# libstdc++ internal implementations
+vptr:*libstdc++*
+alignment:*libstdc++*
+
+# ============================================================================
+# Common Patterns to Suppress
+# ============================================================================
+
+# Hash functions often use intentional integer overflow
+signed-integer-overflow:*hash*
+signed-integer-overflow:*Hash*
+
+# Serialization code may have alignment issues on purpose
+alignment:*serialize*
+alignment:*Serialize*
+alignment:*marshal*
+alignment:*Marshal*
+
+# ============================================================================
+# Custom Application Suppressions
+# ============================================================================
+# Add application-specific suppressions below as needed
+#
+# Example: Suppress overflow in a legacy calculation
+# signed-integer-overflow:src/legacy/calculator.cpp
+
+# Example: Suppress alignment issue in custom allocator
+# alignment:src/memory/pool_allocator.cpp
+
+# Example: Suppress shift warning in bit manipulation code
+# shift:src/utils/bitops.hpp

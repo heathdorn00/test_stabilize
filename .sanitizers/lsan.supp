@@ -1,0 +1,126 @@
+# LeakSanitizer Suppression File
+# Task 7de375: Integrate ASan and UBSan into CI
+#
+# Purpose: Suppress known false positive memory leaks
+# Usage: export LSAN_OPTIONS="suppressions=.sanitizers/lsan.supp"
+#
+# Note: LSan is part of ASan and uses a separate suppression file
+# Documentation: https://clang.llvm.org/docs/LeakSanitizer.html
+#
+# @owner @test_stabilize
+# @date 2025-11-26
+
+# ============================================================================
+# Suppression Format
+# ============================================================================
+# leak:<function_name_pattern>
+#
+# Function name patterns support wildcards (*) and are matched against
+# the call stack of the leaked memory allocation.
+
+# ============================================================================
+# GoogleTest Framework
+# ============================================================================
+# GoogleTest maintains some global state that appears as "leaks"
+leak:testing::internal::*
+leak:*gtest*
+
+# GoogleMock leak patterns
+leak:*gmock*
+
+# ============================================================================
+# gRPC Library
+# ============================================================================
+# gRPC global channel/server state
+leak:grpc_*
+leak:*grpc::*
+
+# gRPC completion queue allocations
+leak:grpc_completion_queue_*
+
+# ============================================================================
+# Protocol Buffers
+# ============================================================================
+# Protobuf descriptor pool (intentionally kept until shutdown)
+leak:google::protobuf::DescriptorPool*
+leak:google::protobuf::MessageFactory*
+
+# Arena allocations in protobuf
+leak:google::protobuf::Arena*
+
+# ============================================================================
+# Boost Libraries
+# ============================================================================
+# Boost.Asio io_context global state
+leak:boost::asio::*
+
+# Boost.System error categories (singletons)
+leak:boost::system::*
+
+# ============================================================================
+# OpenSSL
+# ============================================================================
+# OpenSSL global initialization (cleaned up at shutdown)
+leak:OPENSSL_*
+leak:SSL_*
+leak:EVP_*
+leak:CRYPTO_*
+
+# ============================================================================
+# System Libraries
+# ============================================================================
+# glibc internal allocations
+leak:__libc_*
+leak:_dl_*
+
+# Thread-local storage
+leak:pthread_*
+leak:__pthread_*
+
+# Dynamic linker
+leak:dlopen
+leak:dlsym
+
+# getaddrinfo caches
+leak:getaddrinfo
+leak:gethostbyname
+
+# ============================================================================
+# C++ Standard Library
+# ============================================================================
+# Locale facets (often leaked on purpose)
+leak:std::locale::*
+leak:std::__*locale*
+
+# iostream initialization
+leak:std::ios_base::Init*
+
+# Thread support library
+leak:std::thread::*
+
+# ============================================================================
+# Common Patterns
+# ============================================================================
+# Singleton patterns that are intentionally never freed
+leak:*Instance*
+leak:*Singleton*
+leak:*GetInstance*
+
+# Global initialization patterns
+leak:*GlobalInit*
+leak:*InitGlobal*
+leak:*Initialize*
+
+# ============================================================================
+# Custom Application Suppressions
+# ============================================================================
+# Add application-specific suppressions below as needed
+#
+# Example: Suppress leak in a global registry
+# leak:MyGlobalRegistry::getInstance
+
+# Example: Suppress leak in a connection pool
+# leak:ConnectionPool::create
+
+# Example: Suppress leak in legacy initialization code
+# leak:legacy_init_subsystem

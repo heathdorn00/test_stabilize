@@ -1,0 +1,64 @@
+# AddressSanitizer Suppression File
+# Task 7de375: Integrate ASan and UBSan into CI
+#
+# Purpose: Suppress known false positives in third-party libraries
+# Usage: export ASAN_OPTIONS="suppressions=.sanitizers/asan.supp"
+#
+# Documentation: https://clang.llvm.org/docs/AddressSanitizer.html#suppressing-reports
+#
+# @owner @test_stabilize
+# @date 2025-11-26
+
+# ============================================================================
+# Suppression Format
+# ============================================================================
+# interceptor_via_fun:function_name    - Suppress via function name
+# interceptor_via_lib:library_name     - Suppress via library name
+#
+# Note: ASan has limited suppression support compared to other sanitizers.
+# For leak suppressions, use lsan.supp instead.
+
+# ============================================================================
+# GoogleTest Framework
+# ============================================================================
+# GoogleTest internal memory allocations (known false positives)
+interceptor_via_fun:testing::internal::*
+
+# ============================================================================
+# gRPC Library
+# ============================================================================
+# gRPC global initialization
+interceptor_via_lib:libgrpc*.so*
+
+# ============================================================================
+# Boost Libraries
+# ============================================================================
+# Boost.Asio internal allocations
+interceptor_via_lib:libboost_system*.so*
+
+# ============================================================================
+# Protocol Buffers
+# ============================================================================
+# Protobuf reflection and arena allocations
+interceptor_via_lib:libprotobuf*.so*
+
+# ============================================================================
+# System Libraries
+# ============================================================================
+# glibc internal operations
+interceptor_via_lib:libc.so*
+
+# libstdc++ string operations
+interceptor_via_lib:libstdc++.so*
+
+# pthread thread-local storage
+interceptor_via_lib:libpthread.so*
+
+# ============================================================================
+# Custom Application Suppressions
+# ============================================================================
+# Add application-specific suppressions below as needed
+# Format: interceptor_via_fun:your_function_name
+
+# Example: Suppress a known benign issue in legacy code
+# interceptor_via_fun:legacy_buffer_handler

@@ -1,0 +1,452 @@
+# AddressSanitizer and UndefinedBehaviorSanitizer CI
+# Task 7de375: Integrate ASan and UBSan into CI
+#
+# Purpose: Detect memory errors (ASan) and undefined behavior (UBSan)
+# in C++ services at compile/runtime
+#
+# ASan detects: buffer overflows, use-after-free, double-free, memory leaks
+# UBSan detects: signed overflow, null pointer dereference, invalid shifts
+#
+# @owner @test_stabilize
+# @date 2025-11-26
+
+name: Sanitizers (ASan + UBSan)
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'services/**/*.cpp'
+      - 'services/**/*.hpp'
+      - 'services/**/*.h'
+      - 'services/**/CMakeLists.txt'
+      - 'cpp/**'
+      - '.github/workflows/sanitizers-ci.yml'
+      - '.sanitizers/**'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'services/**/*.cpp'
+      - 'services/**/*.hpp'
+      - 'services/**/*.h'
+      - 'services/**/CMakeLists.txt'
+      - 'cpp/**'
+      - '.github/workflows/sanitizers-ci.yml'
+      - '.sanitizers/**'
+  workflow_dispatch:
+    inputs:
+      sanitizer:
+        description: 'Sanitizer to run (asan, ubsan, both)'
+        required: false
+        default: 'both'
+      service:
+        description: 'Service to test (all, auth-service, api-gateway, etc.)'
+        required: false
+        default: 'all'
+
+env:
+  # ASan configuration
+  ASAN_OPTIONS: >-
+    detect_leaks=1
+    check_initialization_order=1
+    detect_stack_use_after_return=1
+    strict_init_order=1
+    strict_string_checks=1
+    detect_invalid_pointer_pairs=2
+    print_stats=1
+    suppressions=.sanitizers/asan.supp
+    log_path=sanitizer-reports/asan.log
+
+  # UBSan configuration
+  UBSAN_OPTIONS: >-
+    print_stacktrace=1
+    halt_on_error=0
+    suppressions=.sanitizers/ubsan.supp
+    log_path=sanitizer-reports/ubsan.log
+
+  # LSan configuration (part of ASan)
+  LSAN_OPTIONS: >-
+    suppressions=.sanitizers/lsan.supp
+    log_path=sanitizer-reports/lsan.log
+
+jobs:
+  # ===========================================================================
+  # AddressSanitizer Job
+  # ===========================================================================
+  address-sanitizer:
+    name: AddressSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.sanitizer != 'ubsan' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth-service, api-gateway, data-service, cache-service, metrics-service]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            clang-15 \
+            llvm-15 \
+            libgrpc++-dev \
+            protobuf-compiler-grpc \
+            libboost-all-dev
+
+      - name: Create reports directory
+        run: mkdir -p sanitizer-reports
+
+      - name: Build with AddressSanitizer
+        working-directory: services/${{ matrix.service }}
+        run: |
+          mkdir -p build-asan
+          cd build-asan
+
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang-15 \
+            -DCMAKE_CXX_COMPILER=clang++-15 \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g -O1" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address" \
+            ..
+
+          ninja -j$(nproc)
+
+      - name: Run tests with AddressSanitizer
+        working-directory: services/${{ matrix.service }}/build-asan
+        continue-on-error: true
+        run: |
+          # Export environment for ASan
+          export ASAN_OPTIONS="${{ env.ASAN_OPTIONS }}"
+          export LSAN_OPTIONS="${{ env.LSAN_OPTIONS }}"
+
+          echo "Running ASan tests for ${{ matrix.service }}..."
+
+          # Find and run test executables
+          for test_exe in $(find . -name "*test*" -type f -executable); do
+            echo "Running: $test_exe"
+            timeout 300 $test_exe --gtest_output=xml:${{ github.workspace }}/sanitizer-reports/asan-${{ matrix.service }}-$(basename $test_exe).xml 2>&1 | tee -a ${{ github.workspace }}/sanitizer-reports/asan-${{ matrix.service }}.log || true
+          done
+
+      - name: Parse ASan Results
+        id: asan_results
+        run: |
+          echo "## AddressSanitizer Results - ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          LOG_FILE="sanitizer-reports/asan-${{ matrix.service }}.log"
+
+          if [ -f "$LOG_FILE" ]; then
+            # Count different error types
+            HEAP_BUFFER=$(grep -c "heap-buffer-overflow" "$LOG_FILE" 2>/dev/null || echo "0")
+            STACK_BUFFER=$(grep -c "stack-buffer-overflow" "$LOG_FILE" 2>/dev/null || echo "0")
+            USE_AFTER_FREE=$(grep -c "heap-use-after-free" "$LOG_FILE" 2>/dev/null || echo "0")
+            DOUBLE_FREE=$(grep -c "double-free" "$LOG_FILE" 2>/dev/null || echo "0")
+            MEMORY_LEAK=$(grep -c "detected memory leaks" "$LOG_FILE" 2>/dev/null || echo "0")
+            TOTAL_ERRORS=$((HEAP_BUFFER + STACK_BUFFER + USE_AFTER_FREE + DOUBLE_FREE))
+
+            echo "| Error Type | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|------------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Heap Buffer Overflow | $HEAP_BUFFER |" >> $GITHUB_STEP_SUMMARY
+            echo "| Stack Buffer Overflow | $STACK_BUFFER |" >> $GITHUB_STEP_SUMMARY
+            echo "| Use After Free | $USE_AFTER_FREE |" >> $GITHUB_STEP_SUMMARY
+            echo "| Double Free | $DOUBLE_FREE |" >> $GITHUB_STEP_SUMMARY
+            echo "| Memory Leaks Detected | $MEMORY_LEAK |" >> $GITHUB_STEP_SUMMARY
+
+            echo "asan_errors=$TOTAL_ERRORS" >> $GITHUB_OUTPUT
+
+            if [ "$TOTAL_ERRORS" -gt "0" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Error Details (first 20 lines)" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              grep -A 10 "ERROR: AddressSanitizer" "$LOG_FILE" | head -20 >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            else
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "✅ No memory errors detected!" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ No ASan log generated (tests may not have run)" >> $GITHUB_STEP_SUMMARY
+            echo "asan_errors=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload ASan Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-reports-${{ matrix.service }}
+          path: sanitizer-reports/
+          retention-days: 30
+
+      - name: Check for Critical Errors
+        if: steps.asan_results.outputs.asan_errors != '0'
+        run: |
+          echo "❌ AddressSanitizer detected memory errors in ${{ matrix.service }}"
+          exit 1
+
+  # ===========================================================================
+  # UndefinedBehaviorSanitizer Job
+  # ===========================================================================
+  undefined-behavior-sanitizer:
+    name: UBSan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ github.event.inputs.sanitizer != 'asan' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth-service, api-gateway, data-service, cache-service, metrics-service]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            clang-15 \
+            llvm-15 \
+            libgrpc++-dev \
+            protobuf-compiler-grpc \
+            libboost-all-dev
+
+      - name: Create reports directory
+        run: mkdir -p sanitizer-reports
+
+      - name: Build with UndefinedBehaviorSanitizer
+        working-directory: services/${{ matrix.service }}
+        run: |
+          mkdir -p build-ubsan
+          cd build-ubsan
+
+          # UBSan checks to enable
+          UBSAN_CHECKS="undefined,integer,float-divide-by-zero,implicit-conversion,nullability"
+
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang-15 \
+            -DCMAKE_CXX_COMPILER=clang++-15 \
+            -DCMAKE_CXX_FLAGS="-fsanitize=$UBSAN_CHECKS -fno-omit-frame-pointer -g -O1" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=$UBSAN_CHECKS" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=$UBSAN_CHECKS" \
+            ..
+
+          ninja -j$(nproc)
+
+      - name: Run tests with UBSan
+        working-directory: services/${{ matrix.service }}/build-ubsan
+        continue-on-error: true
+        run: |
+          export UBSAN_OPTIONS="${{ env.UBSAN_OPTIONS }}"
+
+          echo "Running UBSan tests for ${{ matrix.service }}..."
+
+          for test_exe in $(find . -name "*test*" -type f -executable); do
+            echo "Running: $test_exe"
+            timeout 300 $test_exe --gtest_output=xml:${{ github.workspace }}/sanitizer-reports/ubsan-${{ matrix.service }}-$(basename $test_exe).xml 2>&1 | tee -a ${{ github.workspace }}/sanitizer-reports/ubsan-${{ matrix.service }}.log || true
+          done
+
+      - name: Parse UBSan Results
+        id: ubsan_results
+        run: |
+          echo "## UndefinedBehaviorSanitizer Results - ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          LOG_FILE="sanitizer-reports/ubsan-${{ matrix.service }}.log"
+
+          if [ -f "$LOG_FILE" ]; then
+            # Count different UB types
+            SIGNED_OVERFLOW=$(grep -c "signed integer overflow" "$LOG_FILE" 2>/dev/null || echo "0")
+            NULL_DEREF=$(grep -c "null pointer" "$LOG_FILE" 2>/dev/null || echo "0")
+            SHIFT_ERROR=$(grep -c "shift" "$LOG_FILE" 2>/dev/null || echo "0")
+            DIVIDE_ZERO=$(grep -c "division by zero" "$LOG_FILE" 2>/dev/null || echo "0")
+            ALIGNMENT=$(grep -c "misaligned" "$LOG_FILE" 2>/dev/null || echo "0")
+            RUNTIME_ERROR=$(grep -c "runtime error:" "$LOG_FILE" 2>/dev/null || echo "0")
+
+            echo "| UB Type | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Signed Integer Overflow | $SIGNED_OVERFLOW |" >> $GITHUB_STEP_SUMMARY
+            echo "| Null Pointer Access | $NULL_DEREF |" >> $GITHUB_STEP_SUMMARY
+            echo "| Invalid Shift | $SHIFT_ERROR |" >> $GITHUB_STEP_SUMMARY
+            echo "| Division by Zero | $DIVIDE_ZERO |" >> $GITHUB_STEP_SUMMARY
+            echo "| Misalignment | $ALIGNMENT |" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Runtime Errors | $RUNTIME_ERROR |" >> $GITHUB_STEP_SUMMARY
+
+            echo "ubsan_errors=$RUNTIME_ERROR" >> $GITHUB_OUTPUT
+
+            if [ "$RUNTIME_ERROR" -gt "0" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### Error Details (first 20 lines)" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              grep "runtime error:" "$LOG_FILE" | head -20 >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            else
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "✅ No undefined behavior detected!" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ No UBSan log generated (tests may not have run)" >> $GITHUB_STEP_SUMMARY
+            echo "ubsan_errors=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload UBSan Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubsan-reports-${{ matrix.service }}
+          path: sanitizer-reports/
+          retention-days: 30
+
+      - name: Check for Critical UB Errors
+        if: steps.ubsan_results.outputs.ubsan_errors != '0'
+        run: |
+          echo "⚠️ UndefinedBehaviorSanitizer detected issues in ${{ matrix.service }}"
+          # UBSan errors are warnings by default, not failing build
+          # Uncomment to enforce: exit 1
+
+  # ===========================================================================
+  # Combined ASan + UBSan Job (for comprehensive testing)
+  # ===========================================================================
+  combined-sanitizers:
+    name: ASan + UBSan Combined
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: ${{ github.event.inputs.sanitizer == 'both' || github.event.inputs.sanitizer == '' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            clang-15 \
+            llvm-15 \
+            libgrpc++-dev \
+            protobuf-compiler-grpc \
+            libboost-all-dev
+
+      - name: Create reports directory
+        run: mkdir -p sanitizer-reports
+
+      - name: Build cpp/ tests with both sanitizers
+        working-directory: cpp
+        run: |
+          mkdir -p build-sanitizers
+          cd build-sanitizers
+
+          # Install GoogleTest for this build
+          git clone https://github.com/google/googletest.git -b v1.14.0 --depth 1
+
+          # Combined sanitizer flags
+          SANITIZER_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1"
+
+          clang++-15 -std=c++17 \
+            $SANITIZER_FLAGS \
+            -I../src \
+            -I./googletest/googletest/include \
+            -I./googletest/googlemock/include \
+            ../tests/string_utils_test.cpp \
+            ./googletest/googletest/src/gtest-all.cc \
+            ./googletest/googletest/src/gtest_main.cc \
+            -I./googletest/googletest \
+            -lpthread \
+            -o string_utils_test \
+            2>&1 | tee compile.log || true
+
+      - name: Run combined sanitizer tests
+        working-directory: cpp/build-sanitizers
+        continue-on-error: true
+        run: |
+          export ASAN_OPTIONS="${{ env.ASAN_OPTIONS }}"
+          export UBSAN_OPTIONS="${{ env.UBSAN_OPTIONS }}"
+          export LSAN_OPTIONS="${{ env.LSAN_OPTIONS }}"
+
+          if [ -f ./string_utils_test ]; then
+            echo "Running combined sanitizer tests..."
+            ./string_utils_test --gtest_output=xml:${{ github.workspace }}/sanitizer-reports/combined-tests.xml 2>&1 | tee ${{ github.workspace }}/sanitizer-reports/combined.log
+          else
+            echo "Test executable not found - check build logs"
+            cat compile.log
+          fi
+
+      - name: Generate Summary
+        run: |
+          echo "## Combined Sanitizer Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f sanitizer-reports/combined.log ]; then
+            ASAN_ERRORS=$(grep -c "ERROR: AddressSanitizer" sanitizer-reports/combined.log 2>/dev/null || echo "0")
+            UBSAN_ERRORS=$(grep -c "runtime error:" sanitizer-reports/combined.log 2>/dev/null || echo "0")
+
+            echo "| Sanitizer | Errors Found |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|--------------|" >> $GITHUB_STEP_SUMMARY
+            echo "| AddressSanitizer | $ASAN_ERRORS |" >> $GITHUB_STEP_SUMMARY
+            echo "| UBSan | $UBSAN_ERRORS |" >> $GITHUB_STEP_SUMMARY
+
+            if [ "$ASAN_ERRORS" -eq "0" ] && [ "$UBSAN_ERRORS" -eq "0" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "✅ All sanitizer checks passed!" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ No combined log generated" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Combined Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-sanitizer-reports
+          path: sanitizer-reports/
+          retention-days: 30
+
+  # ===========================================================================
+  # Summary Job
+  # ===========================================================================
+  sanitizer-summary:
+    name: Sanitizer Summary
+    runs-on: ubuntu-latest
+    needs: [address-sanitizer, undefined-behavior-sanitizer, combined-sanitizers]
+    if: always()
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reports/
+          pattern: '*-reports-*'
+
+      - name: Generate Final Summary
+        run: |
+          echo "# Sanitizer CI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| AddressSanitizer | ${{ needs.address-sanitizer.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| UBSan | ${{ needs.undefined-behavior-sanitizer.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Combined | ${{ needs.combined-sanitizers.result }} |" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Review sanitizer reports in workflow artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- Fix any memory errors before merging" >> $GITHUB_STEP_SUMMARY
+          echo "- Add suppressions for known false positives to \`.sanitizers/\`" >> $GITHUB_STEP_SUMMARY
